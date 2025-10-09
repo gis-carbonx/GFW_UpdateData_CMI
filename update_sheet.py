@@ -1,150 +1,134 @@
-import requests
 import pandas as pd
 import geopandas as gpd
-import gspread
-import json
-from shapely.geometry import shape, Point
+import requests
+import io
+from shapely.ops import unary_union
 from google.oauth2.service_account import Credentials
+from gspread import authorize
 
-# === CONFIGURATION ===
-API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
-SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
-SHEET_NAME = "Sheet1"
-AOI_PATH = "data/aoi.json"
-DESA_PATH = "data/Desa.json"
-PEMILIK_PATH = "data/PemilikLahan.json"
-BLOK_PATH = "data/blok.json"
+SERVICE_ACCOUNT_FILE = "service_account.json"
+SPREADSHEET_NAME = "GFW_Alerts"
+WORKSHEET_NAME = "Data"
+AOI_PATH = "aoi.geojson"
+DESA_PATH = "Desa.geojson"
+PEMILIK_PATH = "pemilik.geojson"
+BLOK_PATH = "blok.geojson"
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-
+API_URL = "https://data-api.globalforestwatch.org/dataset/integrated_deforestation_alerts/latest/download/csv"
 
 def fetch_gfw_data():
-    """Fetch GFW RADD alerts data from API"""
-    geometry = {
-        "type": "Polygon",
-        "coordinates": [[
-            [110.15497, 0.67329],
-            [110.38332, 0.67329],
-            [110.38332, 0.91435],
-            [110.15497, 0.91435],
-            [110.15497, 0.67329]
-        ]]
-    }
+    print("Me")
+    try:
+        response = requests.get(API_URL)
+        response.raise_for_status()
+        df = pd.read_csv(io.StringIO(response.text))
+        df = df.rename(columns={
+            "wur_radd_alerts__date": "date",
+            "wur_radd_alerts__confidence": "confidence",
+            "nama_kel": "Desa"
+        })
 
-    sql = """
-    SELECT longitude, latitude, wur_radd_alerts__date, wur_radd_alerts__confidence
-    FROM results
-    WHERE wur_radd_alerts__date >= '2025-07-01'
-    AND wur_radd_alerts__date <= '2025-10-01'
-    """
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.sort_values("date", ascending=True)
 
-    url = "https://data-api.globalforestwatch.org/dataset/wur_radd_alerts/latest/query"
-    headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body = {"geometry": geometry, "sql": sql}
+        print(f"Berhasil mengambil {len(df)} baris data GFW.")
+        return df
 
-    print("Mengambil data GFW...")
-    resp = requests.post(url, headers=headers, json=body)
-
-    if resp.status_code != 200:
-        print(f"Error {resp.status_code}: {resp.text}")
+    except Exception as e:
+        print(f"Gagal mengambil data GFW: {e}")
         return pd.DataFrame()
-
-    data = resp.json().get("data", [])
-    if not data:
-        print("Tidak ada data ditemukan.")
-        return pd.DataFrame()
-
-    df = pd.DataFrame(data)
-    df = df.rename(columns={
-        "wur_radd_alerts__date": "date",
-        "wur_radd_alerts__confidence": "confidence"
-    })
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-    print(f"Berhasil mengambil {len(df)} baris data dari API.")
-    return df
 
 
 def clip_with_aoi(df, aoi_path):
-    """Clip dataframe points using AOI polygon"""
+    print("Melakukan clip data dengan AOI...")
     try:
-        with open(aoi_path, "r") as f:
-            aoi_geojson = json.load(f)
-        aoi_polygon = shape(aoi_geojson["features"][0]["geometry"])
+        gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
+        aoi = gpd.read_file(aoi_path).to_crs("EPSG:4326")
+        clipped = gpd.sjoin(gdf, aoi, how="inner", predicate="intersects")
+
+        clipped = clipped.drop(columns=["index_right"], errors="ignore")
+        print(f"{len(clipped)} titik berada dalam AOI.")
+        return clipped
+
     except Exception as e:
-        print(f"Gagal membaca AOI: {e}")
+        print(f"Gagal melakukan clip AOI: {e}")
         return df
-
-    inside = []
-    for _, row in df.iterrows():
-        point = Point(row["longitude"], row["latitude"])
-        if aoi_polygon.contains(point):
-            inside.append(row)
-
-    if not inside:
-        print("Tidak ada titik dalam area AOI.")
-        return pd.DataFrame()
-
-    clipped_df = pd.DataFrame(inside)
-    print(f"{len(clipped_df)} titik berada di dalam AOI.")
-    return clipped_df
 
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
-    """Tambahkan atribut dari tiga layer GeoJSON"""
+    print("Melakukan intersect dengan data tambahan...")
+
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
-    desa = gpd.read_file(desa_path)
-    pemilik = gpd.read_file(pemilik_path)
-    blok = gpd.read_file(blok_path)
+    desa = gpd.read_file(desa_path).to_crs("EPSG:4326")
+    gdf = gpd.sjoin(gdf, desa[["geometry", "Desa"]], how="left", predicate="intersects")
 
-    for layer in [desa, pemilik, blok]:
-        if layer.crs is not None:
-            layer.to_crs("EPSG:4326", inplace=True)
-        else:
-            layer.set_crs("EPSG:4326", inplace=True)
+    pemilik = gpd.read_file(pemilik_path).to_crs("EPSG:4326")
+    gdf = gpd.sjoin(gdf, pemilik[["geometry", "Owner"]], how="left", predicate="intersects")
 
-    desa = desa[["nama_kel", "geometry"]]
-    pemilik = pemilik[["Owner", "geometry"]]
-    blok = blok[["Blok", "geometry"]]
+    blok = gpd.read_file(blok_path).to_crs("EPSG:4326")
+    gdf = gpd.sjoin(gdf, blok[["geometry", "Blok"]], how="left", predicate="intersects")
 
-    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
-    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
-    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
+    gdf = gdf.drop(columns=["index_right", "index__pemilik", "index__blok"], errors="ignore")
 
-    gdf = gdf.rename(columns={"nama_kel": "Desa"})
-    gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
-    gdf = gdf.sort_values(by="date", ascending=True)
-
-    gdf = gdf.drop(columns="geometry", errors="ignore")
-    gdf["date"] = gdf["date"].dt.strftime("%Y-%m-%d")
-
-    print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
+    print("Intersect selesai.")
     return gdf
 
+def cluster_points(df):
+    print("Melakukan clustering titik...")
 
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
+    gdf = gdf.to_crs(epsg=32749)  
+    gdf["buffer"] = gdf.geometry.buffer(5.6)
+    union_poly = unary_union(gdf["buffer"])
+
+    if union_poly.geom_type == "Polygon":
+        cluster_polys = [union_poly]
+    else:
+        cluster_polys = list(union_poly.geoms)
+
+    cluster_gdf = gpd.GeoDataFrame(geometry=cluster_polys, crs=gdf.crs)
+    cluster_gdf["Cluster_ID"] = range(1, len(cluster_gdf) + 1)
+
+    joined = gpd.sjoin(gdf, cluster_gdf, how="left", predicate="intersects")
+
+    cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
+    cluster_count["Luas_Ha"] = cluster_count["Jumlah_Titik"] * (11.2 * 11.2) / 10_000
+
+    joined = joined.merge(cluster_count, on="Cluster_ID", how="left")
+
+    joined = joined.to_crs("EPSG:4326")
+    joined = joined.drop(columns=["buffer", "geometry"], errors="ignore")
+
+    print(f"Clustering selesai: {len(cluster_count)} cluster terbentuk.")
+    return joined
+    
 def update_to_google_sheet(df):
-    """Update Google Sheet"""
-    creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    print("Mengunggah ke Google Sheet...")
 
-    sheet.clear()
-    if df.empty:
-        sheet.update([["Tidak ada data dalam area AOI."]])
-        print("Sheet diperbarui tanpa data.")
-        return
+    try:
+        creds = Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        client = authorize(creds)
 
-    df = df.astype(str)
+        spreadsheet = client.open(SPREADSHEET_NAME)
+        worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
 
-    sheet.update([df.columns.values.tolist()] + df.values.tolist())
-    print(f"{len(df)} baris berhasil dikirim ke Google Sheet.")
+        worksheet.clear()
+        worksheet.update([df.columns.values.tolist()] + df.values.tolist())
 
+        print("Data berhasil diunggah ke Google Sheet.")
+    except Exception as e:
+        print(f"Gagal mengunggah ke Google Sheet: {e}")
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
+
     if not df.empty:
         df = clip_with_aoi(df, AOI_PATH)
         if not df.empty:
             df = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
-    update_to_google_sheet(df)
+            df = cluster_points(df)
+            update_to_google_sheet(df)
