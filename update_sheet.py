@@ -10,7 +10,7 @@ API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
 AOI_PATH = "data/aoi.json"
-DESA_PATH = "data/desa.json"
+DESA_PATH = "data/Desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH = "data/blok.json"
 
