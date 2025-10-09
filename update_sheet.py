@@ -98,7 +98,7 @@ def spatial_join(df):
     gdf_points = gpd.sjoin(gdf_points, gdf_pemilik[['Owner', 'geometry']], how="left", predicate="within", rsuffix="_pemilik")
     gdf_points = gpd.sjoin(gdf_points, gdf_blok[['Blok', 'geometry']], how="left", predicate="within", rsuffix="_blok")
 
-    cols_to_drop = [col for col in gdf_points.columns if col.startswith("index_right")]
+    cols_to_drop = [col for col in gdf_points.columns if 'index' in col.lower()]
     gdf_points = gdf_points.drop(columns=cols_to_drop, errors="ignore")
 
     gdf_points = gdf_points.rename(columns={
