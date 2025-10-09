@@ -17,11 +17,12 @@ BLOK_PATH = "blok.geojson"
 API_URL = "https://data-api.globalforestwatch.org/dataset/integrated_deforestation_alerts/latest/download/csv"
 
 def fetch_gfw_data():
-    print("Me")
+    print("Mengambil data GFW...")
     try:
         response = requests.get(API_URL)
         response.raise_for_status()
         df = pd.read_csv(io.StringIO(response.text))
+
         df = df.rename(columns={
             "wur_radd_alerts__date": "date",
             "wur_radd_alerts__confidence": "confidence",
@@ -38,7 +39,6 @@ def fetch_gfw_data():
         print(f"Gagal mengambil data GFW: {e}")
         return pd.DataFrame()
 
-
 def clip_with_aoi(df, aoi_path):
     print("Melakukan clip data dengan AOI...")
     try:
@@ -53,7 +53,6 @@ def clip_with_aoi(df, aoi_path):
     except Exception as e:
         print(f"Gagal melakukan clip AOI: {e}")
         return df
-
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     print("Melakukan intersect dengan data tambahan...")
@@ -80,6 +79,7 @@ def cluster_points(df):
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
     gdf = gdf.to_crs(epsg=32749)  
     gdf["buffer"] = gdf.geometry.buffer(5.6)
+
     union_poly = unary_union(gdf["buffer"])
 
     if union_poly.geom_type == "Polygon":
@@ -102,7 +102,7 @@ def cluster_points(df):
 
     print(f"Clustering selesai: {len(cluster_count)} cluster terbentuk.")
     return joined
-    
+
 def update_to_google_sheet(df):
     print("Mengunggah ke Google Sheet...")
 
@@ -122,6 +122,7 @@ def update_to_google_sheet(df):
         print("Data berhasil diunggah ke Google Sheet.")
     except Exception as e:
         print(f"Gagal mengunggah ke Google Sheet: {e}")
+
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
