@@ -6,10 +6,12 @@ import json
 from shapely.geometry import shape, Point
 from shapely.ops import unary_union
 from google.oauth2.service_account import Credentials
+from datetime import datetime, timedelta
 
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
+
 AOI_PATH = "data/aoi.json"
 DESA_PATH = "data/Desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
@@ -18,7 +20,7 @@ BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def fetch_gfw_data():
-    """Fetch GFW RADD alerts data from API"""
+    """Fetch multiple GFW alerts data from API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -30,18 +32,24 @@ def fetch_gfw_data():
         ]]
     }
 
-    from datetime import datetime, timedelta
-
     today = datetime.utcnow().date()
     start_date = "2023-01-01"
     end_date = today
 
     sql = f"""
-    SELECT longitude, latitude, wur_radd_alerts__date, wur_radd_alerts__confidence,
-       gfw_integr, umd_glad_l, umd_glad_s, wur_radd_a, gfw_inte_1
+    SELECT 
+        longitude, 
+        latitude, 
+        wur_radd_alerts__date,
+        wur_radd_alerts__confidence,
+        gfw_integrated_alerts__date,
+        gfw_integrated_alerts__confidence,
+        umd_glad_sentinel2_alerts__date,
+        umd_glad_sentinel2_alerts__confidence,
+        umd_glad_landsat_alerts__date,
+        umd_glad_landsat_alerts__confidence
     FROM results
-    WHERE wur_radd_alerts__date >= '{start_date}'
-    AND wur_radd_alerts__date <= '{end_date}'
+    WHERE wur_radd_alerts__date >= '{start_date}' AND wur_radd_alerts__date <= '{end_date}'
     """
 
     url = "https://data-api.globalforestwatch.org/dataset/wur_radd_alerts/latest/query"
@@ -50,7 +58,6 @@ def fetch_gfw_data():
 
     print("Mengambil data GFW...")
     resp = requests.post(url, headers=headers, json=body)
-
     if resp.status_code != 200:
         print(f"Error {resp.status_code}: {resp.text}")
         return pd.DataFrame()
@@ -62,20 +69,23 @@ def fetch_gfw_data():
 
     df = pd.DataFrame(data)
     df = df.rename(columns={
-        "wur_radd_alerts__date": "date",
-        "wur_radd_alerts__confidence": "confidence",
-        "gfw_integr": "GFW_Integr",
-        "umd_glad_l": "UMD_GLAD_L",
-        "umd_glad_s": "UMD_GLAD_S",
-        "wur_radd_a": "WUR_RADD_A",
-        "gfw_inte_1": "GFW_Inte_1"
+        "wur_radd_alerts__date": "Radd_Date",
+        "wur_radd_alerts__confidence": "Radd_Alert",
+        "gfw_integrated_alerts__date": "Integrated_Date",
+        "gfw_integrated_alerts__confidence": "Integrated_Alert",
+        "umd_glad_sentinel2_alerts__date": "S2_Date",
+        "umd_glad_sentinel2_alerts__confidence": "S2_Alert",
+        "umd_glad_landsat_alerts__date": "Landsat_Date",
+        "umd_glad_landsat_alerts__confidence": "Landsat_Alert"
     })
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
+    df["Radd_Date"] = pd.to_datetime(df["Radd_Date"], errors="coerce")
+    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
+    df["S2_Date"] = pd.to_datetime(df["S2_Date"], errors="coerce")
+    df["Landsat_Date"] = pd.to_datetime(df["Landsat_Date"], errors="coerce")
 
     print(f"Berhasil mengambil {len(df)} baris data dari API.")
     return df
-
 
 def clip_with_aoi(df, aoi_path):
     """Clip dataframe points using AOI polygon"""
@@ -101,14 +111,13 @@ def clip_with_aoi(df, aoi_path):
     print(f"{len(clipped_df)} titik berada di dalam AOI.")
     return clipped_df
 
-
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     """Tambahkan atribut dari tiga layer GeoJSON"""
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
-    desa = gpd.read_file(desa_path)
-    pemilik = gpd.read_file(pemilik_path)
-    blok = gpd.read_file(blok_path)
+    desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
+    pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
+    blok = gpd.read_file(blok_path)[["Blok", "geometry"]]
 
     for layer in [desa, pemilik, blok]:
         if layer.crs is not None:
@@ -116,33 +125,21 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
         else:
             layer.set_crs("EPSG:4326", inplace=True)
 
-    desa = desa[["nama_kel", "geometry"]]
-    pemilik = pemilik[["Owner", "geometry"]]
-    blok = blok[["Blok", "geometry"]]
-
     gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
 
-
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
-
     gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
-
-    gdf = gdf.sort_values(by="date", ascending=True)
-
+    gdf = gdf.sort_values(by="Radd_Date", ascending=True)
     print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
     return gdf
-
 
 def cluster_points(gdf):
     """Cluster titik bertampalan dengan buffer 11.2m"""
     print("Melakukan clustering titik...")
-
-    gdf = gdf.sort_values(by="date", ascending=True).reset_index(drop=True)
-
+    gdf = gdf.sort_values(by="Radd_Date", ascending=True).reset_index(drop=True)
     gdf = gdf.to_crs(epsg=32749)
-
     gdf["buffer"] = gdf.geometry.buffer(5.6)
 
     union_poly = unary_union(gdf["buffer"])
@@ -152,8 +149,6 @@ def cluster_points(gdf):
         clusters = list(union_poly.geoms)
 
     cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=gdf.crs)
-
-
     cluster_gdf["Cluster_ID"] = [f"C{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
 
     joined = gpd.sjoin(gdf, cluster_gdf, how="left", predicate="intersects")
@@ -162,31 +157,29 @@ def cluster_points(gdf):
     cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * (11.2 * 11.2) / 10_000).round(4)
 
     joined = joined.merge(cluster_count, on="Cluster_ID", how="left")
-
     joined = joined.to_crs(epsg=4326)
-
     joined = joined.drop(columns=["buffer", "geometry"], errors="ignore")
-
-    joined = joined.sort_values(by="date", ascending=True).reset_index(drop=True)
+    joined = joined.sort_values(by="Radd_Date", ascending=True).reset_index(drop=True)
 
     print(f"Clustering selesai: {len(cluster_count)} cluster terbentuk.")
     return joined
-
 
 def update_to_google_sheet(df):
     """Update Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-
     sheet.clear()
+
     if df.empty:
         sheet.update([["Tidak ada data dalam area AOI."]])
         print("Sheet diperbarui tanpa data.")
         return
 
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    date_cols = ["Radd_Date", "Integrated_Date", "S2_Date", "Landsat_Date"]
+    for col in date_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
 
     df = df.astype(str)
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
@@ -196,8 +189,8 @@ if __name__ == "__main__":
     df = fetch_gfw_data()
     if not df.empty:
         df = clip_with_aoi(df, AOI_PATH)
-        if not df.empty:
-            gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
-            if not gdf.empty:
-                gdf = cluster_points(gdf)
-                update_to_google_sheet(gdf)
+    if not df.empty:
+        gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
+    if not gdf.empty:
+        gdf = cluster_points(gdf)
+    update_to_google_sheet(gdf)
