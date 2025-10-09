@@ -55,12 +55,10 @@ def fetch_gfw_data():
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
-
     df = df.rename(columns={
         "wur_radd_alerts__date": "date",
         "wur_radd_alerts__confidence": "confidence"
     })
-
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
     print(f"Berhasil mengambil {len(df)} baris data dari API.")
@@ -96,23 +94,32 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     """Tambahkan atribut dari tiga layer GeoJSON"""
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
-    desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
-    pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
-    blok = gpd.read_file(blok_path)[["Blok", "geometry"]]
+    desa = gpd.read_file(desa_path)
+    pemilik = gpd.read_file(pemilik_path)
+    blok = gpd.read_file(blok_path)
+
+    for layer in [desa, pemilik, blok]:
+        if layer.crs is not None:
+            layer.to_crs("EPSG:4326", inplace=True)
+        else:
+            layer.set_crs("EPSG:4326", inplace=True)
+
+    desa = desa[["nama_kel", "geometry"]]
+    pemilik = pemilik[["Owner", "geometry"]]
+    blok = blok[["Blok", "geometry"]]
 
     gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
 
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
-
     gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
-
     gdf = gdf.sort_values(by="date", ascending=True)
 
     gdf = gdf.drop(columns="geometry", errors="ignore")
+    gdf["date"] = gdf["date"].dt.strftime("%Y-%m-%d")
 
-    print("Intersect selesai: ditambahkan kolom Desa, Owner, dan Blok (tanpa kolom index).")
+    print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
     return gdf
 
 
