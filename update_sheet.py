@@ -20,7 +20,7 @@ BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def fetch_gfw_data():
-    """Fetch multiple GFW alerts data from API"""
+    """Fetch Integrated Alert from GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -41,17 +41,17 @@ def fetch_gfw_data():
         longitude, 
         latitude, 
         gfw_integrated_alerts__date,
-        gfw_integrated_alerts__confidence,
-
+        gfw_integrated_alerts__confidence
     FROM results
     WHERE gfw_integrated_alerts__date >= '{start_date}' AND gfw_integrated_alerts__date <= '{end_date}'
     """
 
-    url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts__date/latest/query"
+    url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
     body = {"geometry": geometry, "sql": sql}
 
-    print("Mengambil data GFW...")
+
+    print("Mengambil Integrated Alert dari GFW...")
     resp = requests.post(url, headers=headers, json=body)
     if resp.status_code != 200:
         print(f"Error {resp.status_code}: {resp.text}")
@@ -59,19 +59,16 @@ def fetch_gfw_data():
 
     data = resp.json().get("data", [])
     if not data:
-        print("Tidak ada data ditemukan.")
+        print("Tidak ada data Integrated Alert ditemukan.")
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
     df = df.rename(columns={
         "gfw_integrated_alerts__date": "Integrated_Date",
-        "gfw_integrated_alerts__confidence": "Integrated_Alert",
+        "gfw_integrated_alerts__confidence": "Integrated_Alert"
     })
-
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-
-
-    print(f"Berhasil mengambil {len(df)} baris data dari API.")
+    print(f"Berhasil mengambil {len(df)} baris Integrated Alert dari API.")
     return df
 
 def clip_with_aoi(df, aoi_path):
@@ -126,7 +123,7 @@ def cluster_points(gdf):
     """Cluster titik bertampalan dengan buffer 11.2m"""
     print("Melakukan clustering titik...")
     gdf = gdf.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
-    gdf = gdf.to_crs(epsg=32749)
+    gdf = gdf.to_crs(epsg=32749)  # UTM 49N
     gdf["buffer"] = gdf.geometry.buffer(5.6)
 
     union_poly = unary_union(gdf["buffer"])
@@ -163,14 +160,12 @@ def update_to_google_sheet(df):
         print("Sheet diperbarui tanpa data.")
         return
 
-    date_cols = [ "Integrated_Date"]
-    for col in date_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+    if "Integrated_Date" in df.columns:
+        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
     df = df.astype(str)
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
-    print(f"{len(df)} baris berhasil dikirim ke Google Sheet.")
+    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
