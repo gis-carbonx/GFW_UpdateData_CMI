@@ -33,7 +33,7 @@ def fetch_gfw_data():
     from datetime import datetime, timedelta
 
     today = datetime.utcnow().date()
-    start_date = today - timedelta(days=30)  # 30 hari terakhir
+    start_date = "2023-01-01"
     end_date = today
 
     sql = f"""
