@@ -12,11 +12,12 @@ SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
 AOI_PATH = "data/aoi.json"
 
-CELL_SIZE = 11.2 
+CELL_SIZE = 11.2  # meter
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+
 def fetch_gfw_data():
-    """Fetch GFW RADD alerts data from API"""
+    """Ambil data RADD alerts dari GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -55,8 +56,9 @@ def fetch_gfw_data():
     print(f"Berhasil mengambil {len(df)} baris data dari API.")
     return df
 
+
 def clip_with_aoi(df, aoi_path):
-    """Clip dataframe points using AOI polygon"""
+    """Potong data titik berdasarkan AOI"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -79,8 +81,9 @@ def clip_with_aoi(df, aoi_path):
     print(f"{len(clipped_df)} titik berada di dalam AOI.")
     return clipped_df
 
+
 def cluster_points(df):
-    """Cluster overlapping 11.2 m squares and compute total area per cluster"""
+    """Kelompokkan titik bertampalan (11.2 m persegi) menjadi satu hamparan dan hitung luas totalnya"""
     if df.empty:
         return df
 
@@ -95,6 +98,7 @@ def cluster_points(df):
     gdf = gdf.to_crs(gdf.estimate_utm_crs())
 
     half = CELL_SIZE / 2
+
     gdf["square"] = gdf.geometry.apply(lambda p: box(p.x - half, p.y - half, p.x + half, p.y + half))
 
     gdf_squares = gpd.GeoDataFrame(geometry=gdf["square"])
@@ -133,7 +137,7 @@ def cluster_points(df):
     for cid, members in clusters.items():
         union_poly = unary_union(gdf.loc[list(members), "square"].tolist())
         area_m2 = union_poly.area
-        cluster_areas.append({"cluster_id": cid, "area_ha": area_m2 / 10000})
+        cluster_areas.append({"cluster_id": cid, "area_m2": area_m2, "area_ha": area_m2 / 10000})
 
     df_area = pd.DataFrame(cluster_areas)
     gdf = gdf.merge(df_area, on="cluster_id", how="left")
@@ -143,8 +147,9 @@ def cluster_points(df):
     print(f"{len(df_area)} cluster ditemukan.")
     return pd.DataFrame(gdf.drop(columns=["geometry", "square"]))
 
+
 def update_to_google_sheet(df):
-    """Update Google Sheet"""
+    """Kirim hasil ke Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -157,6 +162,7 @@ def update_to_google_sheet(df):
 
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
     print(f"{len(df)} baris berhasil dikirim ke Google Sheet.")
+
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
