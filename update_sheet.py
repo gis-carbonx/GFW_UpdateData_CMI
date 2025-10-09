@@ -1,67 +1,103 @@
-import geopandas as gpd
-from shapely.geometry import Polygon
-from shapely.ops import unary_union
-import pyproj
+import requests
+import pandas as pd
+import gspread
+import json
+from shapely.geometry import shape, Point
+from google.oauth2.service_account import Credentials
 
-def calculate_cluster_area(df):
-    """Kelompokkan titik-titik bertampalan (kotak 11.2 m) -> beri cluster_id dan luas cluster"""
+# === CONFIGURATION ===
+API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
+SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
+SHEET_NAME = "Sheet1"
+AOI_PATH = "data/aoi.json"
 
-    if df.empty:
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+
+def fetch_gfw_data():
+    """Fetch GFW RADD alerts data from API"""
+    geometry = {
+        "type": "Polygon",
+        "coordinates": [[
+            [110.15497, 0.67329],
+            [110.38332, 0.67329],
+            [110.38332, 0.91435],
+            [110.15497, 0.91435],
+            [110.15497, 0.67329]
+        ]]
+    }
+
+    sql = """
+    SELECT longitude, latitude, wur_radd_alerts__date, wur_radd_alerts__confidence
+    FROM results
+    WHERE wur_radd_alerts__date >= '2025-07-01'
+    AND wur_radd_alerts__date <= '2025-10-01'
+    """
+
+    url = "https://data-api.globalforestwatch.org/dataset/wur_radd_alerts/latest/query"
+    headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
+    body = {"geometry": geometry, "sql": sql}
+
+    print("Mengambil data GFW...")
+    resp = requests.post(url, headers=headers, json=body)
+
+    if resp.status_code != 200:
+        print(f"Error {resp.status_code}: {resp.text}")
+        return pd.DataFrame()
+
+    data = resp.json().get("data", [])
+    if not data:
+        print("Tidak ada data ditemukan.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data)
+    print(f"Berhasil mengambil {len(df)} baris data dari API.")
+    return df
+
+
+def clip_with_aoi(df, aoi_path):
+    """Clip dataframe points using AOI polygon"""
+    try:
+        with open(aoi_path, "r") as f:
+            aoi_geojson = json.load(f)
+        aoi_polygon = shape(aoi_geojson["features"][0]["geometry"])
+    except Exception as e:
+        print(f"Gagal membaca AOI: {e}")
         return df
 
-    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
+    inside = []
+    for _, row in df.iterrows():
+        point = Point(row["longitude"], row["latitude"])
+        if aoi_polygon.contains(point):
+            inside.append(row)
 
-    gdf = gdf.to_crs(epsg=32749)
+    if not inside:
+        print("Tidak ada titik dalam area AOI.")
+        return pd.DataFrame()
 
-    half_size = 11.2 / 2
-    gdf["square"] = gdf.geometry.apply(lambda p: Polygon([
-        (p.x - half_size, p.y - half_size),
-        (p.x + half_size, p.y - half_size),
-        (p.x + half_size, p.y + half_size),
-        (p.x - half_size, p.y + half_size),
-    ]))
+    clipped_df = pd.DataFrame(inside)
+    print(f"{len(clipped_df)} titik berada di dalam AOI.")
+    return clipped_df
 
-    squares_gdf = gpd.GeoDataFrame(geometry=gdf["square"], crs=gdf.crs)
 
-    squares_gdf["cluster_id"] = squares_gdf.buffer(0).unary_union
-    clusters = squares_gdf.overlay(squares_gdf, how="union")
+def update_to_google_sheet(df):
+    """Update Google Sheet"""
+    creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    from shapely.strtree import STRtree
-    tree = STRtree(squares_gdf.geometry)
-    geom_to_idx = {id(geom): i for i, geom in enumerate(squares_gdf.geometry)}
+    sheet.clear()
+    if df.empty:
+        sheet.update([["Tidak ada data dalam area AOI."]])
+        print("Sheet diperbarui tanpa data.")
+        return
 
-    visited = set()
-    cluster_ids = [-1] * len(squares_gdf)
-    cluster_num = 0
+    sheet.update([df.columns.values.tolist()] + df.values.tolist())
+    print(f"{len(df)} baris berhasil dikirim ke Google Sheet.")
 
-    for i, geom in enumerate(squares_gdf.geometry):
-        if i in visited:
-            continue
-        cluster_num += 1
-        stack = [i]
-        while stack:
-            j = stack.pop()
-            if j in visited:
-                continue
-            visited.add(j)
-            cluster_ids[j] = cluster_num
-            for k, candidate in enumerate(tree.query(squares_gdf.geometry[j])):
-                if squares_gdf.geometry[j].intersects(candidate):
-                    idx = geom_to_idx[id(candidate)]
-                    if idx not in visited:
-                        stack.append(idx)
 
-    gdf["cluster_id"] = cluster_ids
-
-    cluster_areas = {}
-    for cid in set(cluster_ids):
-        cluster_polys = gdf[gdf["cluster_id"] == cid]["square"]
-        union_poly = unary_union(list(cluster_polys))
-        cluster_areas[cid] = round(union_poly.area, 2)  # m²
-
-    gdf["cluster_area_m2"] = gdf["cluster_id"].map(cluster_areas)
-
-    gdf = gdf.drop(columns=["square"])
-
-    print(f"{len(set(cluster_ids))} cluster terbentuk dari {len(gdf)} titik.")
-    return pd.DataFrame(gdf.drop(columns="geometry").to_crs(epsg=4326))
+if __name__ == "__main__":
+    df = fetch_gfw_data()
+    if not df.empty:
+        df = clip_with_aoi(df, AOI_PATH)
+    update_to_google_sheet(df)
