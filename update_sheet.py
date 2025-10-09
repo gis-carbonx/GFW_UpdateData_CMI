@@ -37,7 +37,8 @@ def fetch_gfw_data():
     end_date = today
 
     sql = f"""
-    SELECT longitude, latitude, wur_radd_alerts__date, wur_radd_alerts__confidence
+    SELECT longitude, latitude, wur_radd_alerts__date, wur_radd_alerts__confidence,
+       gfw_integr, umd_glad_l, umd_glad_s, wur_radd_a, gfw_inte_1
     FROM results
     WHERE wur_radd_alerts__date >= '{start_date}'
     AND wur_radd_alerts__date <= '{end_date}'
@@ -62,9 +63,15 @@ def fetch_gfw_data():
     df = pd.DataFrame(data)
     df = df.rename(columns={
         "wur_radd_alerts__date": "date",
-        "wur_radd_alerts__confidence": "confidence"
+        "wur_radd_alerts__confidence": "confidence",
+        "gfw_integr": "GFW_Integr",
+        "umd_glad_l": "UMD_GLAD_L",
+        "umd_glad_s": "UMD_GLAD_S",
+        "wur_radd_a": "WUR_RADD_A",
+        "gfw_inte_1": "GFW_Inte_1"
     })
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
 
     print(f"Berhasil mengambil {len(df)} baris data dari API.")
     return df
