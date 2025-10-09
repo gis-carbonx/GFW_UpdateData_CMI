@@ -30,11 +30,17 @@ def fetch_gfw_data():
         ]]
     }
 
-    sql = """
+    from datetime import datetime, timedelta
+
+    today = datetime.utcnow().date()
+    start_date = today - timedelta(days=30)  # 30 hari terakhir
+    end_date = today
+
+    sql = f"""
     SELECT longitude, latitude, wur_radd_alerts__date, wur_radd_alerts__confidence
     FROM results
-    WHERE wur_radd_alerts__date >= '2025-07-01'
-    AND wur_radd_alerts__date <= '2025-10-01'
+    WHERE wur_radd_alerts__date >= '{start_date}'
+    AND wur_radd_alerts__date <= '{end_date}'
     """
 
     url = "https://data-api.globalforestwatch.org/dataset/wur_radd_alerts/latest/query"
