@@ -111,6 +111,7 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
 
+
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
 
     gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
@@ -125,6 +126,8 @@ def cluster_points(gdf):
     """Cluster titik bertampalan dengan buffer 11.2m"""
     print("Melakukan clustering titik...")
 
+    gdf = gdf.sort_values(by="date", ascending=True).reset_index(drop=True)
+
     gdf = gdf.to_crs(epsg=32749)
 
     gdf["buffer"] = gdf.geometry.buffer(5.6)
@@ -136,18 +139,22 @@ def cluster_points(gdf):
         clusters = list(union_poly.geoms)
 
     cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=gdf.crs)
+
+
     cluster_gdf["Cluster_ID"] = [f"C{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
 
     joined = gpd.sjoin(gdf, cluster_gdf, how="left", predicate="intersects")
 
     cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
-    cluster_count["Luas_Ha"] = cluster_count["Jumlah_Titik"] * (11.2 * 11.2) / 10_000
+    cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * (11.2 * 11.2) / 10_000).round(4)
 
     joined = joined.merge(cluster_count, on="Cluster_ID", how="left")
 
     joined = joined.to_crs(epsg=4326)
 
     joined = joined.drop(columns=["buffer", "geometry"], errors="ignore")
+
+    joined = joined.sort_values(by="date", ascending=True).reset_index(drop=True)
 
     print(f"Clustering selesai: {len(cluster_count)} cluster terbentuk.")
     return joined
