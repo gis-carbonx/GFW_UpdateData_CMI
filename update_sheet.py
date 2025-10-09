@@ -109,7 +109,11 @@ def spatial_join(df):
 
     gdf_points = gdf_points.drop(columns=[col for col in gdf_points.columns if col.startswith('geometry_')], errors='ignore')
 
-    print("Intersect selesai: ditambahkan kolom Desa, Owner, dan Blok.")
+    if "date" in gdf_points.columns:
+        gdf_points["date"] = pd.to_datetime(gdf_points["date"], errors="coerce")
+        gdf_points = gdf_points.sort_values(by="date", ascending=True)
+
+    print("Intersect selesai: ditambahkan kolom Desa, Owner, dan Blok (tanpa kolom index).")
     return pd.DataFrame(gdf_points.drop(columns="geometry"))
 
 
