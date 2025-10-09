@@ -1,2 +1,3 @@
 # GFW_UpdateData_CMI
-konfigurasi github action yang dilakukan untuk mengambil data GFW Api pada dataset integrated disturbant alert   translete
+Configuration of a GitHub Action used to fetch data from the GFW API for the **Integrated Disturbance Alert** dataset.
+
