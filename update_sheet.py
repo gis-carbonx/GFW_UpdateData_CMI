@@ -1,15 +1,20 @@
 import requests
 import pandas as pd
 import gspread
+import json
+from shapely.geometry import shape, Point
 from google.oauth2.service_account import Credentials
 
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
+AOI_PATH = "data/aoi.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+
 def fetch_gfw_data():
+    """Fetch GFW RADD alerts data from API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -45,18 +50,44 @@ def fetch_gfw_data():
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
-    print(f"Berhasil mengambil {len(df)} baris data.")
+    print(f"Berhasil mengambil {len(df)} baris data dari API.")
     return df
 
 
+def clip_with_aoi(df, aoi_path):
+    """Clip dataframe points using AOI polygon"""
+    try:
+        with open(aoi_path, "r") as f:
+            aoi_geojson = json.load(f)
+        aoi_polygon = shape(aoi_geojson["features"][0]["geometry"])
+    except Exception as e:
+        print(f"Gagal membaca AOI: {e}")
+        return df
+
+    inside = []
+    for _, row in df.iterrows():
+        point = Point(row["longitude"], row["latitude"])
+        if aoi_polygon.contains(point):
+            inside.append(row)
+
+    if not inside:
+        print("Tidak ada titik dalam area AOI.")
+        return pd.DataFrame()
+
+    clipped_df = pd.DataFrame(inside)
+    print(f"{len(clipped_df)} titik berada di dalam AOI.")
+    return clipped_df
+
+
 def update_to_google_sheet(df):
+    """Update Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
     sheet.clear()
     if df.empty:
-        sheet.update([["Tidak ada data ditemukan."]])
+        sheet.update([["Tidak ada data dalam area AOI."]])
         print("Sheet diperbarui tanpa data.")
         return
 
@@ -66,4 +97,6 @@ def update_to_google_sheet(df):
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
+    if not df.empty:
+        df = clip_with_aoi(df, AOI_PATH)
     update_to_google_sheet(df)
