@@ -2,14 +2,17 @@ import requests
 import pandas as pd
 import gspread
 import json
+import geopandas as gpd
 from shapely.geometry import shape, Point
 from google.oauth2.service_account import Credentials
 
-# === CONFIGURATION ===
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
 AOI_PATH = "data/aoi.json"
+DESA_PATH = "data/desa.json"
+PEMILIK_PATH = "data/PemilikLahan.json"
+BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -80,6 +83,27 @@ def clip_with_aoi(df, aoi_path):
     return clipped_df
 
 
+def spatial_join(df):
+    """Intersect titik dengan desa, pemilik lahan, dan blok"""
+    if df.empty:
+        return df
+
+    gdf_points = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
+
+    gdf_desa = gpd.read_file(DESA_PATH).to_crs("EPSG:4326")
+    gdf_pemilik = gpd.read_file(PEMILIK_PATH).to_crs("EPSG:4326")
+    gdf_blok = gpd.read_file(BLOK_PATH).to_crs("EPSG:4326")
+
+    gdf_points = gpd.sjoin(gdf_points, gdf_desa[['nama_kel', 'geometry']], how="left", predicate="within")
+    gdf_points = gpd.sjoin(gdf_points, gdf_pemilik[['Owner', 'geometry']], how="left", predicate="within", rsuffix="_pemilik")
+    gdf_points = gpd.sjoin(gdf_points, gdf_blok[['Blok', 'geometry']], how="left", predicate="within", rsuffix="_blok")
+
+    gdf_points = gdf_points.drop(columns=[col for col in gdf_points.columns if col.startswith('geometry_')], errors='ignore')
+
+    print("Intersect selesai: ditambahkan kolom nama_kel, Owner, dan Blok.")
+    return pd.DataFrame(gdf_points.drop(columns="geometry"))
+
+
 def update_to_google_sheet(df):
     """Update Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
@@ -100,4 +124,5 @@ if __name__ == "__main__":
     df = fetch_gfw_data()
     if not df.empty:
         df = clip_with_aoi(df, AOI_PATH)
+        df = spatial_join(df)
     update_to_google_sheet(df)
