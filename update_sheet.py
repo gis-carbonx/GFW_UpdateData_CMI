@@ -1,11 +1,12 @@
 import requests
 import pandas as pd
+import geopandas as gpd
 import gspread
 import json
-import geopandas as gpd
 from shapely.geometry import shape, Point
 from google.oauth2.service_account import Credentials
 
+# === CONFIGURATION ===
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
@@ -54,6 +55,14 @@ def fetch_gfw_data():
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
+
+    df = df.rename(columns={
+        "wur_radd_alerts__date": "date",
+        "wur_radd_alerts__confidence": "confidence"
+    })
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
     print(f"Berhasil mengambil {len(df)} baris data dari API.")
     return df
 
@@ -83,38 +92,28 @@ def clip_with_aoi(df, aoi_path):
     return clipped_df
 
 
-def spatial_join(df):
-    """Intersect titik dengan desa, pemilik lahan, dan blok"""
-    if df.empty:
-        return df
+def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
+    """Tambahkan atribut dari tiga layer GeoJSON"""
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
-    gdf_points = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
+    desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
+    pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
+    blok = gpd.read_file(blok_path)[["Blok", "geometry"]]
 
-    gdf_desa = gpd.read_file(DESA_PATH).to_crs("EPSG:4326")
-    gdf_pemilik = gpd.read_file(PEMILIK_PATH).to_crs("EPSG:4326")
-    gdf_blok = gpd.read_file(BLOK_PATH).to_crs("EPSG:4326")
+    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
+    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
+    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
 
-    gdf_points = gpd.sjoin(gdf_points, gdf_desa[['nama_kel', 'geometry']], how="left", predicate="within")
-    gdf_points = gpd.sjoin(gdf_points, gdf_pemilik[['Owner', 'geometry']], how="left", predicate="within", rsuffix="_pemilik")
-    gdf_points = gpd.sjoin(gdf_points, gdf_blok[['Blok', 'geometry']], how="left", predicate="within", rsuffix="_blok")
+    gdf = gdf.rename(columns={"nama_kel": "Desa"})
 
-    cols_to_drop = [col for col in gdf_points.columns if 'index' in col.lower()]
-    gdf_points = gdf_points.drop(columns=cols_to_drop, errors="ignore")
+    gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
 
-    gdf_points = gdf_points.rename(columns={
-        "wur_radd_alerts__date": "date",
-        "wur_radd_alerts__confidence": "confidence",
-        "nama_kel": "Desa"
-    })
+    gdf = gdf.sort_values(by="date", ascending=True)
 
-    gdf_points = gdf_points.drop(columns=[col for col in gdf_points.columns if col.startswith('geometry_')], errors='ignore')
-
-    if "date" in gdf_points.columns:
-        gdf_points["date"] = pd.to_datetime(gdf_points["date"], errors="coerce")
-        gdf_points = gdf_points.sort_values(by="date", ascending=True)
+    gdf = gdf.drop(columns="geometry", errors="ignore")
 
     print("Intersect selesai: ditambahkan kolom Desa, Owner, dan Blok (tanpa kolom index).")
-    return pd.DataFrame(gdf_points.drop(columns="geometry"))
+    return gdf
 
 
 def update_to_google_sheet(df):
@@ -129,6 +128,8 @@ def update_to_google_sheet(df):
         print("Sheet diperbarui tanpa data.")
         return
 
+    df = df.astype(str)
+
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
     print(f"{len(df)} baris berhasil dikirim ke Google Sheet.")
 
@@ -137,5 +138,6 @@ if __name__ == "__main__":
     df = fetch_gfw_data()
     if not df.empty:
         df = clip_with_aoi(df, AOI_PATH)
-        df = spatial_join(df)
+        if not df.empty:
+            df = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
     update_to_google_sheet(df)
