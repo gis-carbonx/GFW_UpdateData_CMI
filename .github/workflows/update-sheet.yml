@@ -21,9 +21,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Buat file kredensial dari secret base64
+      - name: Buat file kredensial dari secret JSON
         run: |
-          echo "${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}" | base64 --decode > service_account.json
+          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
 
       - name: Jalankan update script
         run: python update_sheet.py
