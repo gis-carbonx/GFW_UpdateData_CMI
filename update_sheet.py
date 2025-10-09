@@ -61,17 +61,30 @@ def calculate_cluster_area(df):
     gdf["buffer"] = gdf.geometry.buffer(11.2)
 
     buffers = list(gdf["buffer"])
-    tree = STRtree(buffers)
     cluster_id = [-1] * len(buffers)
     current_cluster = 0
+
+    tree = STRtree(buffers)
+    geom_to_index = {id(geom): i for i, geom in enumerate(buffers)}
 
     for i, geom in enumerate(buffers):
         if cluster_id[i] != -1:
             continue
 
-        touching = [j for j, g in enumerate(buffers) if geom.intersects(g)]
-        for j in touching:
+        group = set()
+        to_check = [geom]
+
+        while to_check:
+            g = to_check.pop()
+            for other in tree.query(g):
+                j = geom_to_index[id(other)]
+                if j not in group and g.intersects(other):
+                    group.add(j)
+                    to_check.append(other)
+
+        for j in group:
             cluster_id[j] = current_cluster
+
         current_cluster += 1
 
     gdf["cluster"] = cluster_id
@@ -83,11 +96,9 @@ def calculate_cluster_area(df):
         .rename("luas_m2")
         .to_dict()
     )
-
-    gdf["luas_cluster_m2"] = gdf["cluster"].map(cluster_areas)
+    gdf["luas_ha"] = gdf["cluster"].map(lambda x: cluster_areas[x] / 10000)
 
     gdf = gdf.to_crs(epsg=4326)
-
     print("Berhasil menghitung luas tiap cluster.")
     return gdf
 
@@ -135,6 +146,7 @@ def update_to_google_sheet(df):
         print("Sheet diperbarui tanpa data.")
         return
 
+    df = df.astype(str)
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
     print(f"{len(df)} baris berhasil dikirim ke Google Sheet.")
 
@@ -144,5 +156,10 @@ if __name__ == "__main__":
         gdf_points = calculate_cluster_area(df)
         gdf_result = spatial_join_with_layers(gdf_points)
 
-        df_upload = pd.DataFrame(gdf_result.drop(columns="geometry"))
+        df_upload = gdf_result[[
+            "longitude", "latitude", "wur_radd_alerts__date",
+            "wur_radd_alerts__confidence", "Desa", "Owner",
+            "Blok", "Penutup Lahan", "luas_ha"
+        ]].copy()
+
         update_to_google_sheet(df_upload)
