@@ -40,19 +40,14 @@ def fetch_gfw_data():
     SELECT 
         longitude, 
         latitude, 
-        wur_radd_alerts__date,
-        wur_radd_alerts__confidence,
         gfw_integrated_alerts__date,
         gfw_integrated_alerts__confidence,
-        umd_glad_sentinel2_alerts__date,
-        umd_glad_sentinel2_alerts__confidence,
-        umd_glad_landsat_alerts__date,
-        umd_glad_landsat_alerts__confidence
+
     FROM results
-    WHERE wur_radd_alerts__date >= '{start_date}' AND wur_radd_alerts__date <= '{end_date}'
+    WHERE gfw_integrated_alerts__date >= '{start_date}' AND gfw_integrated_alerts__date <= '{end_date}'
     """
 
-    url = "https://data-api.globalforestwatch.org/dataset/wur_radd_alerts/latest/query"
+    url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts__date/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
     body = {"geometry": geometry, "sql": sql}
 
@@ -69,20 +64,12 @@ def fetch_gfw_data():
 
     df = pd.DataFrame(data)
     df = df.rename(columns={
-        "wur_radd_alerts__date": "Radd_Date",
-        "wur_radd_alerts__confidence": "Radd_Alert",
         "gfw_integrated_alerts__date": "Integrated_Date",
         "gfw_integrated_alerts__confidence": "Integrated_Alert",
-        "umd_glad_sentinel2_alerts__date": "S2_Date",
-        "umd_glad_sentinel2_alerts__confidence": "S2_Alert",
-        "umd_glad_landsat_alerts__date": "Landsat_Date",
-        "umd_glad_landsat_alerts__confidence": "Landsat_Alert"
     })
 
-    df["Radd_Date"] = pd.to_datetime(df["Radd_Date"], errors="coerce")
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-    df["S2_Date"] = pd.to_datetime(df["S2_Date"], errors="coerce")
-    df["Landsat_Date"] = pd.to_datetime(df["Landsat_Date"], errors="coerce")
+
 
     print(f"Berhasil mengambil {len(df)} baris data dari API.")
     return df
@@ -131,14 +118,14 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
 
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
     gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
-    gdf = gdf.sort_values(by="Radd_Date", ascending=True)
+    gdf = gdf.sort_values(by="Integrated_Date", ascending=True)
     print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
     return gdf
 
 def cluster_points(gdf):
     """Cluster titik bertampalan dengan buffer 11.2m"""
     print("Melakukan clustering titik...")
-    gdf = gdf.sort_values(by="Radd_Date", ascending=True).reset_index(drop=True)
+    gdf = gdf.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
     gdf = gdf.to_crs(epsg=32749)
     gdf["buffer"] = gdf.geometry.buffer(5.6)
 
@@ -159,7 +146,7 @@ def cluster_points(gdf):
     joined = joined.merge(cluster_count, on="Cluster_ID", how="left")
     joined = joined.to_crs(epsg=4326)
     joined = joined.drop(columns=["buffer", "geometry"], errors="ignore")
-    joined = joined.sort_values(by="Radd_Date", ascending=True).reset_index(drop=True)
+    joined = joined.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
 
     print(f"Clustering selesai: {len(cluster_count)} cluster terbentuk.")
     return joined
@@ -176,7 +163,7 @@ def update_to_google_sheet(df):
         print("Sheet diperbarui tanpa data.")
         return
 
-    date_cols = ["Radd_Date", "Integrated_Date", "S2_Date", "Landsat_Date"]
+    date_cols = [ "Integrated_Date"]
     for col in date_cols:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
