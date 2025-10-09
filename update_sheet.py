@@ -10,7 +10,7 @@ API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
 AOI_PATH = "data/aoi.json"
-DESA_PATH = "data/Desa.json"
+DESA_PATH = "data/desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH = "data/blok.json"
 
@@ -98,9 +98,18 @@ def spatial_join(df):
     gdf_points = gpd.sjoin(gdf_points, gdf_pemilik[['Owner', 'geometry']], how="left", predicate="within", rsuffix="_pemilik")
     gdf_points = gpd.sjoin(gdf_points, gdf_blok[['Blok', 'geometry']], how="left", predicate="within", rsuffix="_blok")
 
+    cols_to_drop = [col for col in gdf_points.columns if col.startswith("index_right")]
+    gdf_points = gdf_points.drop(columns=cols_to_drop, errors="ignore")
+
+    gdf_points = gdf_points.rename(columns={
+        "wur_radd_alerts__date": "date",
+        "wur_radd_alerts__confidence": "confidence",
+        "nama_kel": "Desa"
+    })
+
     gdf_points = gdf_points.drop(columns=[col for col in gdf_points.columns if col.startswith('geometry_')], errors='ignore')
 
-    print("Intersect selesai: ditambahkan kolom nama_kel, Owner, dan Blok.")
+    print("Intersect selesai: ditambahkan kolom Desa, Owner, dan Blok.")
     return pd.DataFrame(gdf_points.drop(columns="geometry"))
 
 
