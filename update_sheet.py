@@ -17,7 +17,6 @@ BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-
 def fetch_gfw_data():
     """Fetch GFW RADD alerts data from API"""
     geometry = {
