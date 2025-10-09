@@ -17,7 +17,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def fetch_gfw_data():
-    """Ambil data RADD alerts dari GFW API"""
+    """Fetch GFW RADD alerts data from API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -58,7 +58,7 @@ def fetch_gfw_data():
 
 
 def clip_with_aoi(df, aoi_path):
-    """Potong data titik berdasarkan AOI"""
+    """Clip dataframe points using AOI polygon"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -101,16 +101,16 @@ def cluster_points(df):
 
     gdf["square"] = gdf.geometry.apply(lambda p: box(p.x - half, p.y - half, p.x + half, p.y + half))
 
-    gdf_squares = gpd.GeoDataFrame(geometry=gdf["square"])
-    gdf_squares["id"] = gdf.index
+    gdf_squares = gpd.GeoDataFrame(geometry=gdf["square"]).reset_index(drop=True)
+    gdf_squares["id"] = gdf_squares.index
 
     sindex = gdf_squares.sindex
     neighbors = {i: set() for i in gdf_squares.index}
 
-    for i, geom in gdf_squares.geometry.items():
+    for i, geom in enumerate(gdf_squares.geometry):
         possible = list(sindex.intersection(geom.bounds))
         for j in possible:
-            if i != j and geom.intersects(gdf_squares.geometry[j]):
+            if i != j and geom.intersects(gdf_squares.geometry.iloc[j]):
                 neighbors[i].add(j)
                 neighbors[j].add(i)
 
@@ -131,7 +131,7 @@ def cluster_points(df):
             cluster_id += 1
 
     id_to_cluster = {idx: cid for cid, members in clusters.items() for idx in members}
-    gdf["cluster_id"] = gdf.index.map(id_to_cluster)
+    gdf["cluster_id"] = gdf_squares.index.map(id_to_cluster)
 
     cluster_areas = []
     for cid, members in clusters.items():
@@ -149,7 +149,7 @@ def cluster_points(df):
 
 
 def update_to_google_sheet(df):
-    """Kirim hasil ke Google Sheet"""
+    """Update Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
