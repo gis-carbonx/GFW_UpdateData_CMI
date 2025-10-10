@@ -20,6 +20,7 @@ BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def fetch_gfw_data():
+    """Fetch Integrated Alert from GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -69,7 +70,9 @@ def fetch_gfw_data():
     print(f"Berhasil mengambil {len(df)} baris Integrated Alert dari API.")
     return df
 
+
 def clip_with_aoi(df, aoi_path):
+    """Clip dataframe points using AOI polygon"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -92,7 +95,9 @@ def clip_with_aoi(df, aoi_path):
     print(f"{len(clipped_df)} titik berada di dalam AOI.")
     return clipped_df
 
+
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
+    """Tambahkan atribut dari tiga layer GeoJSON"""
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
     desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
@@ -115,39 +120,53 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
     return gdf
 
-def cluster_points(gdf):
-    print("Melakukan clustering titik...")
-    gdf = gdf.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
-    gdf = gdf.to_crs(epsg=32749)  
-    gdf["buffer"] = gdf.geometry.buffer(5.6)
 
-    union_poly = unary_union(gdf["buffer"])
-    if union_poly.geom_type == "Polygon":
-        clusters = [union_poly]
-    else:
-        clusters = list(union_poly.geoms)
+def cluster_points_by_owner(gdf):
+    """Cluster titik bertampalan per Owner, dengan buffer dan luas 10 m² per titik"""
+    print("Melakukan clustering titik berdasarkan Owner...")
 
-    cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=gdf.crs)
-    cluster_gdf["Cluster_ID"] = [f"C{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
+    gdf = gdf.to_crs(epsg=32749)  # UTM 49N
+    cluster_results = []
 
-    joined = gpd.sjoin(gdf, cluster_gdf, how="left", predicate="intersects")
+    for owner, group in gdf.groupby("Owner"):
+        group = group.sort_values(by="Integrated_Date").reset_index(drop=True)
+        group["buffer"] = group.geometry.buffer(6)  # ~5m radius = 10m diameter
 
-    cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
-    cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * (11.2 * 11.2) / 10_000).round(4)
+        union_poly = unary_union(group["buffer"])
+        if union_poly.is_empty:
+            continue
+        if union_poly.geom_type == "Polygon":
+            clusters = [union_poly]
+        else:
+            clusters = list(union_poly.geoms)
 
-    owner_info = joined.groupby("Cluster_ID")["Owner"].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else None).reset_index()
+        cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
+        cluster_gdf["Cluster_ID"] = [f"{owner}_C{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
 
-    cluster_summary = cluster_count.merge(owner_info, on="Cluster_ID", how="left")
+        joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
 
-    joined = joined.merge(cluster_summary, on="Cluster_ID", how="left")
-    joined = joined.to_crs(epsg=4326)
-    joined = joined.drop(columns=["buffer", "geometry"], errors="ignore")
-    joined = joined.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
+        cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
+        # Each point = 10 m² = 0.001 ha
+        cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 0.001).round(4)
 
-    print(f"Clustering selesai: {len(cluster_summary)} cluster terbentuk dan Owner berhasil ditambahkan.")
-    return joined
+        merged = joined.merge(cluster_count, on="Cluster_ID", how="left")
+        cluster_results.append(merged)
+
+    if not cluster_results:
+        print("Tidak ada cluster terbentuk.")
+        return gdf.to_crs(4326)
+
+    final_gdf = pd.concat(cluster_results, ignore_index=True)
+    final_gdf = final_gdf.to_crs(epsg=4326)
+    final_gdf = final_gdf.drop(columns=["buffer", "geometry"], errors="ignore")
+    final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
+
+    print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan.")
+    return final_gdf
+
 
 def update_to_google_sheet(df):
+    """Update Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -165,6 +184,7 @@ def update_to_google_sheet(df):
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
     print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
 
+
 if __name__ == "__main__":
     df = fetch_gfw_data()
     if not df.empty:
@@ -172,5 +192,5 @@ if __name__ == "__main__":
     if not df.empty:
         gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
     if not gdf.empty:
-        gdf = cluster_points(gdf)
+        gdf = cluster_points_by_owner(gdf)
     update_to_google_sheet(gdf)
