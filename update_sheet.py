@@ -122,17 +122,18 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
 
 
 def cluster_points_by_owner(gdf):
-    """Cluster titik bertampalan per Owner, dengan buffer kecil (area 10m² per titik), ID unik per tanggal"""
+    """Cluster titik bertampalan per Owner, buffer 11–12 m, area 10 m² per titik, ID unik per tanggal"""
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
-    gdf = gdf.to_crs(epsg=32749)
+    gdf = gdf.to_crs(epsg=32749)  # UTM Zone 49S
     cluster_results = []
     today_str = datetime.utcnow().strftime("%Y%m%d")
 
     for owner, group in gdf.groupby("Owner"):
         group = group.sort_values(by="Integrated_Date").reset_index(drop=True)
 
-        group["buffer"] = group.geometry.buffer(1.6)
+
+        group["buffer"] = group.geometry.buffer(11)  # buffer dalam meter
 
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
@@ -140,12 +141,14 @@ def cluster_points_by_owner(gdf):
         clusters = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
 
         cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
-        cluster_gdf["Cluster_ID"] = [f"{owner}_C{today_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
+        cluster_gdf["Cluster_ID"] = [
+            f"{owner}_C{today_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))
+        ]
 
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
-        cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
 
-        cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 0.001).round(4)
+        cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
+        cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 10 / 10000).round(4)
 
         merged = joined.merge(cluster_count, on="Cluster_ID", how="left")
         cluster_results.append(merged)
