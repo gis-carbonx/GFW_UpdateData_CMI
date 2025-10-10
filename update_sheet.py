@@ -18,6 +18,7 @@ PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+
 def fetch_gfw_data():
     geometry = {
         "type": "Polygon",
@@ -31,8 +32,8 @@ def fetch_gfw_data():
     }
 
     today = datetime.utcnow().date()
-    start_date = today
-    end_date = today
+    start_date = "2023-01-01"
+    end_date = "2023-12-31"
 
     sql = f"""
     SELECT 
@@ -92,6 +93,7 @@ def clip_with_aoi(df, aoi_path):
     clipped_df = pd.DataFrame(inside)
     print(f"{len(clipped_df)} titik berada di dalam AOI.")
     return clipped_df
+
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
@@ -156,15 +158,17 @@ def cluster_points_by_owner(gdf):
     print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan.")
     return final_gdf
 
+
 def update_to_google_sheet_append(df):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
     existing = pd.DataFrame(sheet.get_all_records())
+    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
+
     if not existing.empty:
-        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        existing["Integrated_Date"] = pd.to_datetime(existing["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        existing["Integrated_Date"] = pd.to_datetime(existing["Integrated_Date"], errors="coerce")
 
         before = len(existing)
         df = df[~df["Cluster_ID"].isin(existing.get("Cluster_ID", []))]
@@ -177,9 +181,18 @@ def update_to_google_sheet_append(df):
         print("Tidak ada data baru untuk ditambahkan.")
         return
 
-    df = df.astype(str)
-    sheet.append_rows(df.values.tolist())
-    print(f"{len(df)} baris baru berhasil ditambahkan ke Google Sheet.")
+    records = []
+    for _, row in df.iterrows():
+        row_data = []
+        for col in df.columns:
+            val = row[col]
+            if isinstance(val, pd.Timestamp):
+                val = val.to_pydatetime().date() 
+            row_data.append(val)
+        records.append(row_data)
+
+    sheet.append_rows(records, value_input_option="USER_ENTERED")
+    print(f"{len(records)} baris baru berhasil ditambahkan ke Google Sheet dengan format tanggal.")
 
 
 if __name__ == "__main__":
