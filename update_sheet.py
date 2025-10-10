@@ -33,7 +33,7 @@ def fetch_gfw_data():
     }
 
     today = datetime.utcnow().date()
-    start_date = "2024-01-01"
+    start_date = "2023-01-01"
     end_date = today
 
     sql = f"""
@@ -122,31 +122,29 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
 
 
 def cluster_points_by_owner(gdf):
-    """Cluster titik bertampalan per Owner, dengan buffer dan luas 10 m² per titik"""
-    print("Melakukan clustering titik berdasarkan Owner...")
+    """Cluster titik bertampalan per Owner, dengan buffer kecil (area 10m² per titik), ID unik per tanggal"""
+    print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
-    gdf = gdf.to_crs(epsg=32749)  # UTM 49N
+    gdf = gdf.to_crs(epsg=32749)
     cluster_results = []
+    today_str = datetime.utcnow().strftime("%Y%m%d")
 
     for owner, group in gdf.groupby("Owner"):
         group = group.sort_values(by="Integrated_Date").reset_index(drop=True)
-        group["buffer"] = group.geometry.buffer(6)  # ~5m radius = 10m diameter
+
+        group["buffer"] = group.geometry.buffer(1.6)
 
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
             continue
-        if union_poly.geom_type == "Polygon":
-            clusters = [union_poly]
-        else:
-            clusters = list(union_poly.geoms)
+        clusters = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
 
         cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
-        cluster_gdf["Cluster_ID"] = [f"{owner}_C{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
+        cluster_gdf["Cluster_ID"] = [f"{owner}_C{today_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
 
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
-
         cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
-        # Each point = 10 m² = 0.001 ha
+
         cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 0.001).round(4)
 
         merged = joined.merge(cluster_count, on="Cluster_ID", how="left")
