@@ -20,7 +20,6 @@ BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def fetch_gfw_data():
-    """Fetch Integrated Alert from GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -72,7 +71,6 @@ def fetch_gfw_data():
 
 
 def clip_with_aoi(df, aoi_path):
-    """Clip dataframe points using AOI polygon"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -97,7 +95,6 @@ def clip_with_aoi(df, aoi_path):
 
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
-    """Tambahkan atribut dari tiga layer GeoJSON"""
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
     desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
@@ -110,9 +107,14 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
         else:
             layer.set_crs("EPSG:4326", inplace=True)
 
-    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
-    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
-    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
+    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within")
+    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
+
+    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
+    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
+
+    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
+    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
 
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
     gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
@@ -132,8 +134,7 @@ def cluster_points_by_owner(gdf):
     for owner, group in gdf.groupby("Owner"):
         group = group.sort_values(by="Integrated_Date").reset_index(drop=True)
 
-
-        group["buffer"] = group.geometry.buffer(11)  # buffer dalam meter
+        group["buffer"] = group.geometry.buffer(11)  # buffer 12 meter
 
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
@@ -146,6 +147,7 @@ def cluster_points_by_owner(gdf):
         ]
 
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
+        joined.drop(columns=[col for col in joined.columns if "index_right" in col], inplace=True, errors="ignore")
 
         cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
         cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 10 / 10000).round(4)
@@ -159,7 +161,7 @@ def cluster_points_by_owner(gdf):
 
     final_gdf = pd.concat(cluster_results, ignore_index=True)
     final_gdf = final_gdf.to_crs(epsg=4326)
-    final_gdf = final_gdf.drop(columns=["buffer", "geometry"], errors="ignore")
+    final_gdf.drop(columns=["buffer", "geometry"], inplace=True, errors="ignore")
     final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
 
     print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan.")
