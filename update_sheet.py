@@ -118,7 +118,7 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
 def cluster_points(gdf):
     print("Melakukan clustering titik...")
     gdf = gdf.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
-    gdf = gdf.to_crs(epsg=32749)  # UTM 49N
+    gdf = gdf.to_crs(epsg=32749)  
     gdf["buffer"] = gdf.geometry.buffer(5.6)
 
     union_poly = unary_union(gdf["buffer"])
@@ -134,7 +134,7 @@ def cluster_points(gdf):
 
     cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
     cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * (11.2 * 11.2) / 10_000).round(4)
-)
+
     owner_info = joined.groupby("Cluster_ID")["Owner"].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else None).reset_index()
 
     cluster_summary = cluster_count.merge(owner_info, on="Cluster_ID", how="left")
