@@ -20,7 +20,6 @@ BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def fetch_gfw_data():
-    """Fetch Integrated Alert from GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -50,7 +49,6 @@ def fetch_gfw_data():
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
     body = {"geometry": geometry, "sql": sql}
 
-
     print("Mengambil Integrated Alert dari GFW...")
     resp = requests.post(url, headers=headers, json=body)
     if resp.status_code != 200:
@@ -72,7 +70,6 @@ def fetch_gfw_data():
     return df
 
 def clip_with_aoi(df, aoi_path):
-    """Clip dataframe points using AOI polygon"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -96,7 +93,6 @@ def clip_with_aoi(df, aoi_path):
     return clipped_df
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
-    """Tambahkan atribut dari tiga layer GeoJSON"""
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
     desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
@@ -120,7 +116,6 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     return gdf
 
 def cluster_points(gdf):
-    """Cluster titik bertampalan dengan buffer 11.2m"""
     print("Melakukan clustering titik...")
     gdf = gdf.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
     gdf = gdf.to_crs(epsg=32749)  # UTM 49N
@@ -139,17 +134,20 @@ def cluster_points(gdf):
 
     cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
     cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * (11.2 * 11.2) / 10_000).round(4)
+)
+    owner_info = joined.groupby("Cluster_ID")["Owner"].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else None).reset_index()
 
-    joined = joined.merge(cluster_count, on="Cluster_ID", how="left")
+    cluster_summary = cluster_count.merge(owner_info, on="Cluster_ID", how="left")
+
+    joined = joined.merge(cluster_summary, on="Cluster_ID", how="left")
     joined = joined.to_crs(epsg=4326)
     joined = joined.drop(columns=["buffer", "geometry"], errors="ignore")
     joined = joined.sort_values(by="Integrated_Date", ascending=True).reset_index(drop=True)
 
-    print(f"Clustering selesai: {len(cluster_count)} cluster terbentuk.")
+    print(f"Clustering selesai: {len(cluster_summary)} cluster terbentuk dan Owner berhasil ditambahkan.")
     return joined
 
 def update_to_google_sheet(df):
-    """Update Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
