@@ -186,10 +186,14 @@ def update_to_google_sheet_append(df):
         row_data = []
         for col in df.columns:
             val = row[col]
-            if isinstance(val, pd.Timestamp):
-                val = val.to_pydatetime().date() 
+            if isinstance(val, (pd.Timestamp, datetime)):
+                val = val.strftime("%Y-%m-%d") 
             row_data.append(val)
         records.append(row_data)
+
+    sheet.append_rows(records, value_input_option="USER_ENTERED")
+    print(f"{len(records)} baris baru berhasil ditambahkan ke Google Sheet dengan format tanggal otomatis.")
+
 
     sheet.append_rows(records, value_input_option="USER_ENTERED")
     print(f"{len(records)} baris baru berhasil ditambahkan ke Google Sheet dengan format tanggal.")
