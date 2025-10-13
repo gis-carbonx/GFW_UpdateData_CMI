@@ -209,8 +209,10 @@ def update_to_google_sheet(df):
     sheet.update(values, value_input_option="USER_ENTERED")
     print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
 
+from datetime import datetime, timedelta, timezone
+
 def update_last_run_log():
-    """Catat waktu terakhir script dijalankan di sheet Log_Update (WIB)"""
+    '''update loh time'''
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
 
@@ -223,8 +225,10 @@ def update_last_run_log():
     wib = timezone(timedelta(hours=7))
     now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
 
-    log_sheet.append_row(["Update_Run", now_wib], value_input_option="USER_ENTERED")
-    print(f"Log waktu update ditambahkan (WIB): {now_wib}")
+    log_sheet.update("A2:B2", [["Update_Run", now_wib]], value_input_option="USER_ENTERED")
+
+    print(f"Log terupdate: {now_wib}")
+
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
