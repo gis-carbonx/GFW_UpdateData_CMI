@@ -33,7 +33,7 @@ def fetch_gfw_data():
     }
 
     start_date = "2024-01-01"
-    end_date = today
+    end_date = "2025-10-13"
 
     sql = f"""
     SELECT 
