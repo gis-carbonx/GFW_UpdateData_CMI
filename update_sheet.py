@@ -125,14 +125,14 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     return gdf
 
 def cluster_points_by_owner(gdf):
-    """Cluster titik bertampalan per Owner dan tanggal dengan Cluster_ID unik, centroid, dan intersect Desa"""
+    """Cluster titik bertampalan per Owner dan tanggal dengan Cluster_ID unik, centroid (lat-lon), dan intersect Desa"""
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
-    gdf = gdf.to_crs(epsg=32749)  # UTM zone 49S
+    gdf = gdf.to_crs(epsg=32749)
     cluster_results = []
 
     desa = gpd.read_file(DESA_PATH)[["nama_kel", "geometry"]]
-    desa = desa.to_crs(epsg=32749)
+    desa = desa.to_crs(epsg=4326)
     desa = desa.rename(columns={"nama_kel": "Desa_Cluster"})
 
     for (owner, tanggal), group in gdf.groupby(["Owner", "Integrated_Date"]):
@@ -154,15 +154,19 @@ def cluster_points_by_owner(gdf):
             f"{owner}_{tanggal_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))
         ]
 
-        cluster_gdf["Cluster_X"] = cluster_gdf.geometry.centroid.x
-        cluster_gdf["Cluster_Y"] = cluster_gdf.geometry.centroid.y
+        cluster_gdf_centroid = cluster_gdf.copy()
+        cluster_gdf_centroid["geometry"] = cluster_gdf.geometry.centroid
+        cluster_gdf_centroid = cluster_gdf_centroid.to_crs(epsg=4326)
 
-        centroid_gdf = gpd.GeoDataFrame(
+        cluster_gdf["Cluster_Y"] = cluster_gdf_centroid.geometry.y.round(5)  # latitude
+        cluster_gdf["Cluster_X"] = cluster_gdf_centroid.geometry.x.round(5)  # longitude
+
+        centroid_points = gpd.GeoDataFrame(
             cluster_gdf[["Cluster_ID", "Cluster_X", "Cluster_Y"]],
             geometry=gpd.points_from_xy(cluster_gdf["Cluster_X"], cluster_gdf["Cluster_Y"]),
-            crs=cluster_gdf.crs
+            crs="EPSG:4326"
         )
-        centroid_desa = gpd.sjoin(centroid_gdf, desa, how="left", predicate="within")
+        centroid_desa = gpd.sjoin(centroid_points, desa, how="left", predicate="within")
         cluster_gdf = cluster_gdf.merge(
             centroid_desa[["Cluster_ID", "Desa_Cluster"]],
             on="Cluster_ID", how="left"
@@ -183,16 +187,12 @@ def cluster_points_by_owner(gdf):
 
     final_gdf = pd.concat(cluster_results, ignore_index=True)
     final_gdf = final_gdf.to_crs(epsg=4326)
-
-    if "Cluster_X" in final_gdf.columns and "Cluster_Y" in final_gdf.columns:
-        final_gdf["Cluster_X"] = final_gdf["Cluster_X"].round(6)
-        final_gdf["Cluster_Y"] = final_gdf["Cluster_Y"].round(6)
-
     final_gdf.drop(columns=["buffer", "geometry"], inplace=True, errors="ignore")
     final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
 
     print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan.")
     return final_gdf
+
 
 
 def update_to_google_sheet(df):
