@@ -229,10 +229,12 @@ if __name__ == "__main__":
             if not gdf.empty:
                 gdf = cluster_points_by_owner(gdf)
                 append_unique_to_google_sheet(gdf)
-                update_last_run_log()
+                print("Data baru berhasil ditambahkan ke Google Sheet.")
             else:
                 print("Tidak ada hasil intersect dari data terbaru.")
         else:
             print("Tidak ada data dalam area AOI.")
     else:
         print("Tidak ada data baru dari GFW.")
+    update_last_run_log()
+
