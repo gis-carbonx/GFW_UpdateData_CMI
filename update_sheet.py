@@ -6,7 +6,7 @@ import json
 from shapely.geometry import shape, Point
 from shapely.ops import unary_union
 from google.oauth2.service_account import Credentials
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
@@ -209,23 +209,22 @@ def update_to_google_sheet(df):
     sheet.update(values, value_input_option="USER_ENTERED")
     print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
 
-
 def update_last_run_log():
-    """Catat waktu terakhir script dijalankan di sheet Log_Update"""
+    """Catat waktu terakhir script dijalankan di sheet Log_Update (WIB)"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
 
     try:
         log_sheet = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
-
         log_sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=LOG_SHEET_NAME, rows=10, cols=2)
-        log_sheet.update([["Last_Update", "Datetime"]])
+        log_sheet.update([["Last_Update", "Datetime_WIB"]])
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_sheet.append_row(["Update_Run", now], value_input_option="USER_ENTERED")
-    print(f"Log waktu update ditambahkan: {now}")
+    wib = timezone(timedelta(hours=7))
+    now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
 
+    log_sheet.append_row(["Update_Run", now_wib], value_input_option="USER_ENTERED")
+    print(f"Log waktu update ditambahkan (WIB): {now_wib}")
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
