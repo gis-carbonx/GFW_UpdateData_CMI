@@ -136,7 +136,6 @@ def cluster_points_by_owner(gdf):
 
     for owner, group in gdf.groupby("Owner"):
         group = group.sort_values(by="Integrated_Date").reset_index(drop=True)
-
         group["buffer"] = group.geometry.buffer(11)  # 11 meter
 
         union_poly = unary_union(group["buffer"])
@@ -172,7 +171,7 @@ def cluster_points_by_owner(gdf):
 
 
 def update_to_google_sheet(df):
-    """Update Google Sheet dengan format tanggal yang dikenali Google Sheets"""
+    """Update Google Sheet dengan format tanggal dikenali (bukan teks)"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -194,6 +193,7 @@ def update_to_google_sheet(df):
 
     sheet.update(values, value_input_option="USER_ENTERED")
     print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet dengan format tanggal asli.")
+
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
