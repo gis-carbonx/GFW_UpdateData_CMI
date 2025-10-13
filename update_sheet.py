@@ -183,16 +183,15 @@ def update_to_google_sheet(df):
         return
 
     if "Integrated_Date" in df.columns:
-        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
+        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
     for col in df.columns:
-        if col != "Integrated_Date":
-            df[col] = df[col].astype(str)
+        df[col] = df[col].astype(str)
 
     values = [df.columns.values.tolist()] + df.values.tolist()
 
     sheet.update(values, value_input_option="USER_ENTERED")
-    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet dengan format tanggal asli.")
+    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet dengan format tanggal otomatis.")
 
 
 if __name__ == "__main__":
