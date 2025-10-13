@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
-LOG_SHEET_NAME = "Log_Update" 
+LOG_SHEET_NAME = "Log_Update"
 
 AOI_PATH = "data/aoi.json"
 DESA_PATH = "data/Desa.json"
@@ -20,7 +20,24 @@ BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-def fetch_gfw_data():
+def get_last_update_date():
+    creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+    try:
+        log_sheet = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
+        data = log_sheet.get_all_values()
+        if len(data) > 1 and len(data[1]) > 1:
+            last_update_str = data[1][1]
+            last_update = datetime.strptime(last_update_str, "%Y-%m-%d %H:%M:%S")
+            return last_update.date()
+    except Exception as e:
+        print(f"Tidak menemukan log sebelumnya: {e}")
+    return datetime(2024, 1, 1).date()
+
+def fetch_gfw_data_since(last_date):
+    wib = timezone(timedelta(hours=7))
+    today = datetime.now(wib).strftime("%Y-%m-%d")
+
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -32,9 +49,6 @@ def fetch_gfw_data():
         ]]
     }
 
-    start_date = "2024-01-01"
-    end_date = "2025-10-13"
-
     sql = f"""
     SELECT 
         longitude, 
@@ -42,14 +56,15 @@ def fetch_gfw_data():
         gfw_integrated_alerts__date,
         gfw_integrated_alerts__confidence
     FROM results
-    WHERE gfw_integrated_alerts__date >= '{start_date}' AND gfw_integrated_alerts__date <= '{end_date}'
+    WHERE gfw_integrated_alerts__date > '{last_date}' 
+      AND gfw_integrated_alerts__date <= '{today}'
     """
 
+    print(f"Mengambil data GFW sejak {last_date} hingga {today}...")
     url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
     body = {"geometry": geometry, "sql": sql}
 
-    print("Mengambil Integrated Alert dari GFW...")
     resp = requests.post(url, headers=headers, json=body)
     if resp.status_code != 200:
         print(f"Error {resp.status_code}: {resp.text}")
@@ -57,7 +72,7 @@ def fetch_gfw_data():
 
     data = resp.json().get("data", [])
     if not data:
-        print("Tidak ada data Integrated Alert ditemukan.")
+        print("Tidak ada data baru dari GFW.")
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
@@ -66,7 +81,7 @@ def fetch_gfw_data():
         "gfw_integrated_alerts__confidence": "Integrated_Alert"
     })
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-    print(f"Berhasil mengambil {len(df)} baris Integrated Alert dari API.")
+    print(f"Berhasil mengambil {len(df)} baris data baru dari API.")
     return df
 
 def clip_with_aoi(df, aoi_path):
@@ -106,37 +121,25 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
             layer.set_crs("EPSG:4326", inplace=True)
 
     gdf = gpd.sjoin(gdf, desa, how="left", predicate="within")
-    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
-
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
-    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
-
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
-    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
 
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
     gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
     gdf = gdf.sort_values(by="Integrated_Date", ascending=True)
-    print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
+    print("Intersect selesai.")
     return gdf
 
 def cluster_points_by_owner(gdf):
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
-
     gdf = gdf.to_crs(epsg=32749)
     cluster_results = []
-
-    desa = gpd.read_file(DESA_PATH)[["nama_kel", "geometry"]]
-    desa = desa.to_crs(epsg=4326)
-    desa = desa.rename(columns={"nama_kel": "Desa_Cluster"})
 
     for (owner, tanggal), group in gdf.groupby(["Owner", "Integrated_Date"]):
         if pd.isna(owner) or group.empty:
             continue
 
-        group = group.reset_index(drop=True)
         group["buffer"] = group.geometry.buffer(11)
-
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
             continue
@@ -156,20 +159,7 @@ def cluster_points_by_owner(gdf):
         cluster_gdf["Cluster_Y"] = cluster_gdf_centroid.geometry.y.round(5)
         cluster_gdf["Cluster_X"] = cluster_gdf_centroid.geometry.x.round(5)
 
-        centroid_points = gpd.GeoDataFrame(
-            cluster_gdf[["Cluster_ID", "Cluster_X", "Cluster_Y"]],
-            geometry=gpd.points_from_xy(cluster_gdf["Cluster_X"], cluster_gdf["Cluster_Y"]),
-            crs="EPSG:4326"
-        )
-        centroid_desa = gpd.sjoin(centroid_points, desa, how="left", predicate="within")
-        cluster_gdf = cluster_gdf.merge(
-            centroid_desa[["Cluster_ID", "Desa_Cluster"]],
-            on="Cluster_ID", how="left"
-        )
-
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
-        joined.drop(columns=[col for col in joined.columns if "index_right" in col], inplace=True, errors="ignore")
-
         cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
         cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 10 / 10000).round(4)
 
@@ -177,45 +167,44 @@ def cluster_points_by_owner(gdf):
         cluster_results.append(merged)
 
     if not cluster_results:
-        print("Tidak ada cluster terbentuk.")
         return gdf.to_crs(4326)
 
-    final_gdf = pd.concat(cluster_results, ignore_index=True)
-    final_gdf = final_gdf.to_crs(epsg=4326)
+    final_gdf = pd.concat(cluster_results, ignore_index=True).to_crs(epsg=4326)
     final_gdf.drop(columns=["buffer", "geometry"], inplace=True, errors="ignore")
     final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
-
-    print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan.")
+    print(f"Clustering selesai ({len(final_gdf)} baris).")
     return final_gdf
 
-def update_to_google_sheet(df):
+def append_unique_to_google_sheet(df):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-    sheet.clear()
 
     if df.empty:
-        sheet.update([["Tidak ada data dalam area AOI."]])
-        print("Sheet diperbarui tanpa data.")
+        print("Tidak ada data baru untuk ditambahkan.")
         return
 
-    if "Integrated_Date" in df.columns:
-        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    existing = pd.DataFrame(sheet.get_all_records())
+    if not existing.empty and "longitude" in existing.columns:
+        merged = pd.concat([existing, df], ignore_index=True)
+        merged.drop_duplicates(subset=["longitude", "latitude", "Integrated_Date"], inplace=True)
+        new_rows = merged[~merged.index.isin(existing.index)]
+    else:
+        new_rows = df
 
-    for col in df.columns:
-        df[col] = df[col].astype(str)
+    if new_rows.empty:
+        print("Semua data sudah ada, tidak ada yang baru.")
+        return
 
-    values = [df.columns.values.tolist()] + df.values.tolist()
-    sheet.update(values, value_input_option="USER_ENTERED")
-    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
+    new_rows["Integrated_Date"] = pd.to_datetime(new_rows["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    new_rows = new_rows.astype(str)
 
-from datetime import datetime, timedelta, timezone
+    sheet.append_rows(new_rows.values.tolist(), value_input_option="USER_ENTERED")
+    print(f"{len(new_rows)} baris baru berhasil ditambahkan ke Google Sheet.")
 
 def update_last_run_log():
-    '''update loh time'''
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
-
     try:
         log_sheet = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
@@ -224,19 +213,18 @@ def update_last_run_log():
 
     wib = timezone(timedelta(hours=7))
     now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
-
     log_sheet.update("A2:B2", [["Update_Run", now_wib]], value_input_option="USER_ENTERED")
-
-    print(f"Log terupdate: {now_wib}")
-
+    print(f"Log diperbarui: {now_wib}")
 
 if __name__ == "__main__":
-    df = fetch_gfw_data()
+    last_date = get_last_update_date()
+    df = fetch_gfw_data_since(last_date)
+
     if not df.empty:
         df = clip_with_aoi(df, AOI_PATH)
     if not df.empty:
         gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
     if not gdf.empty:
         gdf = cluster_points_by_owner(gdf)
-    update_to_google_sheet(gdf)
-    update_last_run_log() 
+        append_unique_to_google_sheet(gdf)
+        update_last_run_log()
