@@ -172,7 +172,7 @@ def cluster_points_by_owner(gdf):
 
 
 def update_to_google_sheet(df):
-    """Update Google Sheet"""
+    """Update Google Sheet dengan format tanggal yang dikenali Google Sheets"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -184,12 +184,16 @@ def update_to_google_sheet(df):
         return
 
     if "Integrated_Date" in df.columns:
-        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
 
-    df = df.astype(str)
-    sheet.update([df.columns.values.tolist()] + df.values.tolist())
-    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
+    for col in df.columns:
+        if col != "Integrated_Date":
+            df[col] = df[col].astype(str)
 
+    values = [df.columns.values.tolist()] + df.values.tolist()
+
+    sheet.update(values, value_input_option="USER_ENTERED")
+    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet dengan format tanggal asli.")
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
