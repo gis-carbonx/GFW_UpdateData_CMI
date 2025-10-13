@@ -16,10 +16,11 @@ AOI_PATH = "data/aoi.json"
 DESA_PATH = "data/Desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH = "data/blok.json"
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-
 def fetch_gfw_data():
+    """Fetch Integrated Alert from GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -42,24 +43,22 @@ def fetch_gfw_data():
         gfw_integrated_alerts__date,
         gfw_integrated_alerts__confidence
     FROM results
-    WHERE gfw_integrated_alerts__date >= '{start_date}' 
-      AND gfw_integrated_alerts__date <= '{end_date}'
+    WHERE gfw_integrated_alerts__date >= '{start_date}' AND gfw_integrated_alerts__date <= '{end_date}'
     """
 
     url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
     body = {"geometry": geometry, "sql": sql}
 
-    print(f"Mengambil Integrated Alert dari GFW ({start_date})...")
+    print("Mengambil Integrated Alert dari GFW...")
     resp = requests.post(url, headers=headers, json=body)
-
     if resp.status_code != 200:
         print(f"Error {resp.status_code}: {resp.text}")
         return pd.DataFrame()
 
     data = resp.json().get("data", [])
     if not data:
-        print("Tidak ada data Integrated Alert ditemukan hari ini.")
+        print("Tidak ada data Integrated Alert ditemukan.")
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
@@ -68,11 +67,12 @@ def fetch_gfw_data():
         "gfw_integrated_alerts__confidence": "Integrated_Alert"
     })
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-    print(f"Berhasil mengambil {len(df)} baris Integrated Alert hari ini.")
+    print(f"Berhasil mengambil {len(df)} baris Integrated Alert dari API.")
     return df
 
 
 def clip_with_aoi(df, aoi_path):
+    """Clip dataframe points using AOI polygon"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -97,6 +97,7 @@ def clip_with_aoi(df, aoi_path):
 
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
+    """Tambahkan atribut dari tiga layer GeoJSON"""
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
     desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
@@ -109,9 +110,14 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
         else:
             layer.set_crs("EPSG:4326", inplace=True)
 
-    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
-    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
-    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within").drop(columns=["index_right"], errors="ignore")
+    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within")
+    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
+
+    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
+    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
+
+    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
+    gdf.drop(columns=[col for col in gdf.columns if "index_right" in col], inplace=True, errors="ignore")
 
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
     gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
@@ -121,15 +127,17 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
 
 
 def cluster_points_by_owner(gdf):
+    """Cluster titik bertampalan per Owner, buffer 11–12 m, area 10 m² per titik, ID unik per tanggal"""
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
-    gdf = gdf.to_crs(epsg=32749)
+    gdf = gdf.to_crs(epsg=32749)  # UTM Zone 49S
     cluster_results = []
     today_str = datetime.utcnow().strftime("%Y%m%d")
 
     for owner, group in gdf.groupby("Owner"):
         group = group.sort_values(by="Integrated_Date").reset_index(drop=True)
-        group["buffer"] = group.geometry.buffer(11)  # buffer radius 11 m
+
+        group["buffer"] = group.geometry.buffer(11)  # 11 meter
 
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
@@ -137,10 +145,12 @@ def cluster_points_by_owner(gdf):
         clusters = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
 
         cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
-        cluster_gdf["Cluster_ID"] = [f"{today_str}_{owner}_C{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))]
+        cluster_gdf["Cluster_ID"] = [
+            f"{owner}_C{today_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))
+        ]
 
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
-        joined.drop(columns=[c for c in joined.columns if "index_right" in c], inplace=True, errors="ignore")
+        joined.drop(columns=[col for col in joined.columns if "index_right" in col], inplace=True, errors="ignore")
 
         cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
         cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 10 / 10000).round(4)
@@ -161,61 +171,32 @@ def cluster_points_by_owner(gdf):
     return final_gdf
 
 
-def update_to_google_sheet_append(df):
+def update_to_google_sheet(df):
+    """Update Google Sheet"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-
-    all_values = sheet.get_all_values()
-    if not all_values:
-        print("Sheet kosong. Menulis header terlebih dahulu...")
-        sheet.append_row(df.columns.tolist(), value_input_option="USER_ENTERED")
-
-    try:
-        existing = pd.DataFrame(sheet.get_all_records())
-    except Exception as e:
-        print(f"Terjadi kesalahan membaca data sheet: {e}")
-        existing = pd.DataFrame()
-
-    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-
-    if not existing.empty:
-        existing["Integrated_Date"] = pd.to_datetime(existing["Integrated_Date"], errors="coerce")
-        before = len(existing)
-        df = df[~df["Cluster_ID"].isin(existing.get("Cluster_ID", []))]
-        after = len(df)
-        print(f"Menambahkan {after} data baru dari total {before} yang sudah ada.")
-    else:
-        print("Sheet kosong atau tidak memiliki data sebelumnya.")
+    sheet.clear()
 
     if df.empty:
-        print("Tidak ada data baru untuk ditambahkan.")
+        sheet.update([["Tidak ada data dalam area AOI."]])
+        print("Sheet diperbarui tanpa data.")
         return
 
-    records = []
-    for _, row in df.iterrows():
-        row_data = []
-        for col in df.columns:
-            val = row[col]
-            if isinstance(val, (pd.Timestamp, datetime)):
-                val = val.strftime("%Y-%m-%d")
-            row_data.append(val)
-        records.append(row_data)
+    if "Integrated_Date" in df.columns:
+        df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    sheet.append_rows(records, value_input_option="USER_ENTERED")
-    print(f"{len(records)} baris baru berhasil ditambahkan ke Google Sheet dengan format tanggal otomatis.")
+    df = df.astype(str)
+    sheet.update([df.columns.values.tolist()] + df.values.tolist())
+    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
 
 
 if __name__ == "__main__":
     df = fetch_gfw_data()
-
-    if df.empty:
-        print("Tidak ada data hari ini, proses dihentikan.")
-    else:
+    if not df.empty:
         df = clip_with_aoi(df, AOI_PATH)
-        if not df.empty:
-            gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
-            if not gdf.empty:
-                gdf = cluster_points_by_owner(gdf)
-                if not gdf.empty:
-                    update_to_google_sheet_append(gdf)
+    if not df.empty:
+        gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
+    if not gdf.empty:
+        gdf = cluster_points_by_owner(gdf)
+    update_to_google_sheet(gdf)
