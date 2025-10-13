@@ -222,9 +222,17 @@ if __name__ == "__main__":
 
     if not df.empty:
         df = clip_with_aoi(df, AOI_PATH)
-    if not df.empty:
-        gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
-    if not gdf.empty:
-        gdf = cluster_points_by_owner(gdf)
-        append_unique_to_google_sheet(gdf)
-        update_last_run_log()
+
+        if not df.empty:
+            gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
+
+            if not gdf.empty:
+                gdf = cluster_points_by_owner(gdf)
+                append_unique_to_google_sheet(gdf)
+                update_last_run_log()
+            else:
+                print("Tidak ada hasil intersect dari data terbaru.")
+        else:
+            print("Tidak ada data dalam area AOI.")
+    else:
+        print("Tidak ada data baru dari GFW.")
