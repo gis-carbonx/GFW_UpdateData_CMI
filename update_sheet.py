@@ -11,6 +11,7 @@ from datetime import datetime
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 SHEET_NAME = "Sheet1"
+LOG_SHEET_NAME = "Log_Update" 
 
 AOI_PATH = "data/aoi.json"
 DESA_PATH = "data/Desa.json"
@@ -20,7 +21,6 @@ BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def fetch_gfw_data():
-    """Fetch Integrated Alert dari GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -69,9 +69,7 @@ def fetch_gfw_data():
     print(f"Berhasil mengambil {len(df)} baris Integrated Alert dari API.")
     return df
 
-
 def clip_with_aoi(df, aoi_path):
-    """Clip dataframe points menggunakan AOI polygon"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -94,9 +92,7 @@ def clip_with_aoi(df, aoi_path):
     print(f"{len(clipped_df)} titik berada di dalam AOI.")
     return clipped_df
 
-
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
-    """Tambahkan atribut dari tiga layer GeoJSON"""
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
     desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
@@ -125,7 +121,6 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     return gdf
 
 def cluster_points_by_owner(gdf):
-    """Cluster titik bertampalan per Owner dan tanggal dengan Cluster_ID unik, centroid (lat-lon), dan intersect Desa"""
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
     gdf = gdf.to_crs(epsg=32749)
@@ -140,7 +135,7 @@ def cluster_points_by_owner(gdf):
             continue
 
         group = group.reset_index(drop=True)
-        group["buffer"] = group.geometry.buffer(11)  # buffer 11 meter
+        group["buffer"] = group.geometry.buffer(11)
 
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
@@ -158,8 +153,8 @@ def cluster_points_by_owner(gdf):
         cluster_gdf_centroid["geometry"] = cluster_gdf.geometry.centroid
         cluster_gdf_centroid = cluster_gdf_centroid.to_crs(epsg=4326)
 
-        cluster_gdf["Cluster_Y"] = cluster_gdf_centroid.geometry.y.round(5)  # latitude
-        cluster_gdf["Cluster_X"] = cluster_gdf_centroid.geometry.x.round(5)  # longitude
+        cluster_gdf["Cluster_Y"] = cluster_gdf_centroid.geometry.y.round(5)
+        cluster_gdf["Cluster_X"] = cluster_gdf_centroid.geometry.x.round(5)
 
         centroid_points = gpd.GeoDataFrame(
             cluster_gdf[["Cluster_ID", "Cluster_X", "Cluster_Y"]],
@@ -193,10 +188,7 @@ def cluster_points_by_owner(gdf):
     print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan.")
     return final_gdf
 
-
-
 def update_to_google_sheet(df):
-    """Update Google Sheet dengan format tanggal dikenali"""
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -215,7 +207,24 @@ def update_to_google_sheet(df):
 
     values = [df.columns.values.tolist()] + df.values.tolist()
     sheet.update(values, value_input_option="USER_ENTERED")
-    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet dengan centroid dan desa cluster.")
+    print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet.")
+
+
+def update_last_run_log():
+    """Catat waktu terakhir script dijalankan di sheet Log_Update"""
+    creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+
+    try:
+        log_sheet = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+
+        log_sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=LOG_SHEET_NAME, rows=10, cols=2)
+        log_sheet.update([["Last_Update", "Datetime"]])
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_sheet.append_row(["Update_Run", now], value_input_option="USER_ENTERED")
+    print(f"Log waktu update ditambahkan: {now}")
 
 
 if __name__ == "__main__":
@@ -227,3 +236,4 @@ if __name__ == "__main__":
     if not gdf.empty:
         gdf = cluster_points_by_owner(gdf)
     update_to_google_sheet(gdf)
+    update_last_run_log() 
