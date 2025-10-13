@@ -124,20 +124,23 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
     return gdf
 
-
 def cluster_points_by_owner(gdf):
-    """Cluster titik bertampalan per Owner dan tanggal dengan centroid"""
+    """Cluster titik bertampalan per Owner dan tanggal dengan Cluster_ID unik, centroid, dan intersect Desa"""
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
-    gdf = gdf.to_crs(epsg=32749)
+    gdf = gdf.to_crs(epsg=32749)  # UTM zone 49S
     cluster_results = []
+
+    desa = gpd.read_file(DESA_PATH)[["nama_kel", "geometry"]]
+    desa = desa.to_crs(epsg=32749)
+    desa = desa.rename(columns={"nama_kel": "Desa_Cluster"})
 
     for (owner, tanggal), group in gdf.groupby(["Owner", "Integrated_Date"]):
         if pd.isna(owner) or group.empty:
             continue
 
         group = group.reset_index(drop=True)
-        group["buffer"] = group.geometry.buffer(11)
+        group["buffer"] = group.geometry.buffer(11)  # buffer 11 meter
 
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
@@ -150,8 +153,20 @@ def cluster_points_by_owner(gdf):
         cluster_gdf["Cluster_ID"] = [
             f"{owner}_{tanggal_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))
         ]
-        cluster_gdf["Cluster_X"] = cluster_gdf.centroid.x
-        cluster_gdf["Cluster_Y"] = cluster_gdf.centroid.y
+
+        cluster_gdf["Cluster_X"] = cluster_gdf.geometry.centroid.x
+        cluster_gdf["Cluster_Y"] = cluster_gdf.geometry.centroid.y
+
+        centroid_gdf = gpd.GeoDataFrame(
+            cluster_gdf[["Cluster_ID", "Cluster_X", "Cluster_Y"]],
+            geometry=gpd.points_from_xy(cluster_gdf["Cluster_X"], cluster_gdf["Cluster_Y"]),
+            crs=cluster_gdf.crs
+        )
+        centroid_desa = gpd.sjoin(centroid_gdf, desa, how="left", predicate="within")
+        cluster_gdf = cluster_gdf.merge(
+            centroid_desa[["Cluster_ID", "Desa_Cluster"]],
+            on="Cluster_ID", how="left"
+        )
 
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
         joined.drop(columns=[col for col in joined.columns if "index_right" in col], inplace=True, errors="ignore")
@@ -160,8 +175,6 @@ def cluster_points_by_owner(gdf):
         cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 10 / 10000).round(4)
 
         merged = joined.merge(cluster_count, on="Cluster_ID", how="left")
-        merged = merged.merge(cluster_gdf[["Cluster_ID", "Cluster_X", "Cluster_Y"]], on="Cluster_ID", how="left")
-
         cluster_results.append(merged)
 
     if not cluster_results:
@@ -170,23 +183,15 @@ def cluster_points_by_owner(gdf):
 
     final_gdf = pd.concat(cluster_results, ignore_index=True)
     final_gdf = final_gdf.to_crs(epsg=4326)
-    final_gdf["Cluster_X"] = final_gdf["Cluster_X"].round(6)
-    final_gdf["Cluster_Y"] = final_gdf["Cluster_Y"].round(6)
+
+    if "Cluster_X" in final_gdf.columns and "Cluster_Y" in final_gdf.columns:
+        final_gdf["Cluster_X"] = final_gdf["Cluster_X"].round(6)
+        final_gdf["Cluster_Y"] = final_gdf["Cluster_Y"].round(6)
+
     final_gdf.drop(columns=["buffer", "geometry"], inplace=True, errors="ignore")
-
-    desa = gpd.read_file(DESA_PATH)[["nama_kel", "geometry"]].to_crs(epsg=4326)
-    cluster_points = gpd.GeoDataFrame(
-        final_gdf.drop_duplicates("Cluster_ID"),
-        geometry=gpd.points_from_xy(final_gdf["Cluster_X"], final_gdf["Cluster_Y"]),
-        crs="EPSG:4326"
-    )
-    desa_join = gpd.sjoin(cluster_points, desa, how="left", predicate="within")
-    desa_map = desa_join[["Cluster_ID", "nama_kel"]].rename(columns={"nama_kel": "Desa_Cluster"})
-
-    final_gdf = final_gdf.merge(desa_map, on="Cluster_ID", how="left")
     final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
 
-    print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan, dengan centroid dan desa cluster ditambahkan.")
+    print(f"Clustering selesai untuk {final_gdf['Owner'].nunique()} pemilik lahan.")
     return final_gdf
 
 
