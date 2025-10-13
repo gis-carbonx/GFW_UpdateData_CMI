@@ -71,6 +71,7 @@ def fetch_gfw_data():
     print(f"Berhasil mengambil {len(df)} baris Integrated Alert hari ini.")
     return df
 
+
 def clip_with_aoi(df, aoi_path):
     try:
         with open(aoi_path, "r") as f:
@@ -118,6 +119,7 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     print("Intersect selesai: kolom Desa, Owner, dan Blok berhasil ditambahkan.")
     return gdf
 
+
 def cluster_points_by_owner(gdf):
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
@@ -164,18 +166,27 @@ def update_to_google_sheet_append(df):
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    existing = pd.DataFrame(sheet.get_all_records())
+    all_values = sheet.get_all_values()
+    if not all_values:
+        print("Sheet kosong. Menulis header terlebih dahulu...")
+        sheet.append_row(df.columns.tolist(), value_input_option="USER_ENTERED")
+
+    try:
+        existing = pd.DataFrame(sheet.get_all_records())
+    except Exception as e:
+        print(f"Terjadi kesalahan membaca data sheet: {e}")
+        existing = pd.DataFrame()
+
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
 
     if not existing.empty:
         existing["Integrated_Date"] = pd.to_datetime(existing["Integrated_Date"], errors="coerce")
-
         before = len(existing)
         df = df[~df["Cluster_ID"].isin(existing.get("Cluster_ID", []))]
         after = len(df)
         print(f"Menambahkan {after} data baru dari total {before} yang sudah ada.")
     else:
-        print("Sheet kosong, menulis data pertama kali.")
+        print("Sheet kosong atau tidak memiliki data sebelumnya.")
 
     if df.empty:
         print("Tidak ada data baru untuk ditambahkan.")
@@ -187,16 +198,12 @@ def update_to_google_sheet_append(df):
         for col in df.columns:
             val = row[col]
             if isinstance(val, (pd.Timestamp, datetime)):
-                val = val.strftime("%Y-%m-%d") 
+                val = val.strftime("%Y-%m-%d")
             row_data.append(val)
         records.append(row_data)
 
     sheet.append_rows(records, value_input_option="USER_ENTERED")
     print(f"{len(records)} baris baru berhasil ditambahkan ke Google Sheet dengan format tanggal otomatis.")
-
-
-    sheet.append_rows(records, value_input_option="USER_ENTERED")
-    print(f"{len(records)} baris baru berhasil ditambahkan ke Google Sheet dengan format tanggal.")
 
 
 if __name__ == "__main__":
