@@ -20,7 +20,7 @@ BLOK_PATH = "data/blok.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def fetch_gfw_data():
-    """Fetch Integrated Alert from GFW API"""
+    """Fetch Integrated Alert dari GFW API"""
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -32,7 +32,6 @@ def fetch_gfw_data():
         ]]
     }
 
-    today = datetime.utcnow().date()
     start_date = "2023-01-01"
     end_date = "2023-12-31"
 
@@ -72,7 +71,7 @@ def fetch_gfw_data():
 
 
 def clip_with_aoi(df, aoi_path):
-    """Clip dataframe points using AOI polygon"""
+    """Clip dataframe points menggunakan AOI polygon"""
     try:
         with open(aoi_path, "r") as f:
             aoi_geojson = json.load(f)
@@ -127,25 +126,29 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
 
 
 def cluster_points_by_owner(gdf):
-    """Cluster titik bertampalan per Owner, buffer 11–12 m, area 10 m² per titik, ID unik per tanggal"""
+    """Cluster titik bertampalan per Owner dan tanggal dengan Cluster_ID unik"""
     print("Melakukan clustering titik berdasarkan Owner dan tanggal...")
 
     gdf = gdf.to_crs(epsg=32749)  # UTM Zone 49S
     cluster_results = []
-    today_str = datetime.utcnow().strftime("%Y%m%d")
 
-    for owner, group in gdf.groupby("Owner"):
-        group = group.sort_values(by="Integrated_Date").reset_index(drop=True)
-        group["buffer"] = group.geometry.buffer(11)  # 11 meter
+    for (owner, tanggal), group in gdf.groupby(["Owner", "Integrated_Date"]):
+        if pd.isna(owner) or group.empty:
+            continue
+
+        group = group.reset_index(drop=True)
+        group["buffer"] = group.geometry.buffer(11)  # buffer 11 meter
 
         union_poly = unary_union(group["buffer"])
         if union_poly.is_empty:
             continue
+
         clusters = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
+        tanggal_str = pd.to_datetime(tanggal).strftime("%Y-%m-%d")
 
         cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
         cluster_gdf["Cluster_ID"] = [
-            f"{owner}_C{today_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))
+            f"{owner}_{tanggal_str}_{str(i+1).zfill(3)}" for i in range(len(cluster_gdf))
         ]
 
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
@@ -189,8 +192,8 @@ def update_to_google_sheet(df):
         df[col] = df[col].astype(str)
 
     values = [df.columns.values.tolist()] + df.values.tolist()
-
     sheet.update(values, value_input_option="USER_ENTERED")
+
     print(f"{len(df)} baris Integrated Alert berhasil dikirim ke Google Sheet dengan format tanggal otomatis.")
 
 
