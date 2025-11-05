@@ -20,23 +20,10 @@ BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-def get_last_update_date():
-    creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
-    client = gspread.authorize(creds)
-    try:
-        log_sheet = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
-        data = log_sheet.get_all_values()
-        if len(data) > 1 and len(data[1]) > 1:
-            last_update_str = data[1][1]
-            last_update = datetime.strptime(last_update_str, "%Y-%m-%d %H:%M:%S")
-            return last_update.date()
-    except Exception as e:
-        print(f"Tidak menemukan log sebelumnya: {e}")
-    return datetime(2024, 1, 1).date()
-
-def fetch_gfw_data_since(last_date):
+def fetch_gfw_data_from_jan():
     wib = timezone(timedelta(hours=7))
     today = datetime.now(wib).strftime("%Y-%m-%d")
+    start_date = "2025-01-01"
 
     geometry = {
         "type": "Polygon",
@@ -56,11 +43,11 @@ def fetch_gfw_data_since(last_date):
         gfw_integrated_alerts__date,
         gfw_integrated_alerts__confidence
     FROM results
-    WHERE gfw_integrated_alerts__date > '{last_date}' 
+    WHERE gfw_integrated_alerts__date >= '{start_date}' 
       AND gfw_integrated_alerts__date <= '{today}'
     """
 
-    print(f"Mengambil data GFW sejak {last_date} hingga {today}...")
+    print(f"Mengambil data GFW dari {start_date} hingga {today}...")
     url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
     body = {"geometry": geometry, "sql": sql}
@@ -72,7 +59,7 @@ def fetch_gfw_data_since(last_date):
 
     data = resp.json().get("data", [])
     if not data:
-        print("Tidak ada data baru dari GFW.")
+        print("Tidak ada data dari GFW.")
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
@@ -81,7 +68,7 @@ def fetch_gfw_data_since(last_date):
         "gfw_integrated_alerts__confidence": "Integrated_Alert"
     })
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-    print(f"Berhasil mengambil {len(df)} baris data baru dari API.")
+    print(f"Berhasil mengambil {len(df)} baris data dari API.")
     return df
 
 def clip_with_aoi(df, aoi_path):
@@ -175,74 +162,57 @@ def cluster_points_by_owner(gdf):
     print(f"Clustering selesai ({len(final_gdf)} baris).")
     return final_gdf
 
-def append_unique_to_google_sheet(df):
+def overwrite_google_sheet(df):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
+    sheet.clear()
+    print("Data lama di Google Sheet telah dihapus.")
+
     if df.empty:
-        print("Tidak ada data baru untuk ditambahkan.")
+        print("Tidak ada data baru untuk ditulis.")
         return
 
-    existing = pd.DataFrame(sheet.get_all_records())
-    if not existing.empty and "longitude" in existing.columns:
-        merged = pd.concat([existing, df], ignore_index=True)
-        merged.drop_duplicates(subset=["longitude", "latitude", "Integrated_Date"], inplace=True)
-        new_rows = merged[~merged.index.isin(existing.index)]
-    else:
-        new_rows = df
+    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df = df.astype(str)
 
-    if new_rows.empty:
-        print("Semua data sudah ada, tidak ada yang baru.")
-        return
+    header = list(df.columns)
+    sheet.append_rows([header] + df.values.tolist(), value_input_option="USER_ENTERED")
+    print(f"{len(df)} baris baru berhasil ditulis ke Google Sheet.")
 
-    new_rows["Integrated_Date"] = pd.to_datetime(new_rows["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    new_rows = new_rows.astype(str)
-
-    sheet.append_rows(new_rows.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"{len(new_rows)} baris baru berhasil ditambahkan ke Google Sheet.")
-
-def update_last_run_log(latest_data_date=None):
+def update_log(start_date, latest_date):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     try:
         log_sheet = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
         log_sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=LOG_SHEET_NAME, rows=10, cols=2)
-        log_sheet.update([["Last_Update", "Datetime_WIB"]])
 
     wib = timezone(timedelta(hours=7))
     now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
 
-    if latest_data_date:
-        log_sheet.update("A2:B2", [["Last_Data_Date", str(latest_data_date)]], value_input_option="USER_ENTERED")
-        log_sheet.update("A3:B3", [["Update_Run", now_wib]], value_input_option="USER_ENTERED")
-        print(f"Log diperbarui: data terakhir {latest_data_date}, waktu update {now_wib}")
-    else:
-        log_sheet.update("A2:B2", [["Update_Run", now_wib]], value_input_option="USER_ENTERED")
-        print(f"Log diperbarui: {now_wib}")
+    log_sheet.update("A1:B3", [
+        ["Start_Date", start_date],
+        ["End_Date", str(latest_date)],
+        ["Update_Run", now_wib]
+    ])
+    print(f"Log diperbarui: data {start_date} s.d. {latest_date}, update {now_wib}")
 
 if __name__ == "__main__":
-    last_date = get_last_update_date()
-    df = fetch_gfw_data_since(last_date)
+    df = fetch_gfw_data_from_jan()
 
-    latest_data_date = None
     if not df.empty:
-        latest_data_date = df["Integrated_Date"].max().date()
         df = clip_with_aoi(df, AOI_PATH)
-
         if not df.empty:
             gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
-
             if not gdf.empty:
                 gdf = cluster_points_by_owner(gdf)
-                append_unique_to_google_sheet(gdf)
-                print("Data baru berhasil ditambahkan ke Google Sheet.")
+                overwrite_google_sheet(gdf)
+                update_log("2025-01-01", gdf["Integrated_Date"].max().date())
             else:
                 print("Tidak ada hasil intersect dari data terbaru.")
         else:
-            print("Tidak ada data dalam area AOI.")
+            print("Tidak ada data dalam AOI.")
     else:
         print("Tidak ada data baru dari GFW.")
-
-    update_last_run_log(latest_data_date)
