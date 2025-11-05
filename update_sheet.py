@@ -68,7 +68,9 @@ def fetch_gfw_data_from_jan():
         "gfw_integrated_alerts__confidence": "Integrated_Alert"
     })
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
+
     print(f"Berhasil mengambil {len(df)} baris data dari API.")
+    print(f"Tanggal data terbaru dari GFW API: {df['Integrated_Date'].max().date()}")
     return df
 
 def clip_with_aoi(df, aoi_path):
@@ -92,6 +94,7 @@ def clip_with_aoi(df, aoi_path):
 
     clipped_df = pd.DataFrame(inside)
     print(f"{len(clipped_df)} titik berada di dalam AOI.")
+    print(f"Tanggal maksimum dalam AOI: {clipped_df['Integrated_Date'].max().date()}")
     return clipped_df
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
@@ -108,13 +111,21 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
             layer.set_crs("EPSG:4326", inplace=True)
 
     gdf = gpd.sjoin(gdf, desa, how="left", predicate="within")
-    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
-    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
-
     gdf = gdf.rename(columns={"nama_kel": "Desa"})
-    gdf = gdf.loc[:, ~gdf.columns.str.contains("^index")]
+    if "index_right" in gdf.columns:
+        gdf = gdf.drop(columns=["index_right"])
+
+    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
+    if "index_right" in gdf.columns:
+        gdf = gdf.drop(columns=["index_right"])
+
+    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
+    if "index_right" in gdf.columns:
+        gdf = gdf.drop(columns=["index_right"])
+
     gdf = gdf.sort_values(by="Integrated_Date", ascending=True)
     print("Intersect selesai.")
+    print(f"Tanggal maksimum setelah intersect: {gdf['Integrated_Date'].max().date()}")
     return gdf
 
 def cluster_points_by_owner(gdf):
@@ -160,6 +171,7 @@ def cluster_points_by_owner(gdf):
     final_gdf.drop(columns=["buffer", "geometry"], inplace=True, errors="ignore")
     final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
     print(f"Clustering selesai ({len(final_gdf)} baris).")
+    print(f"Tanggal maksimum setelah clustering: {final_gdf['Integrated_Date'].max()}")
     return final_gdf
 
 def overwrite_google_sheet(df):
