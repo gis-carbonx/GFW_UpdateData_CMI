@@ -204,9 +204,15 @@ def update_log(start_date, latest_date):
     wib = timezone(timedelta(hours=7))
     now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
 
+    if not isinstance(latest_date, str):
+        try:
+            latest_date = latest_date.strftime("%Y-%m-%d")
+        except Exception:
+            latest_date = str(latest_date)
+
     log_sheet.update("A1:B3", [
         ["Start_Date", start_date],
-        ["End_Date", str(latest_date)],
+        ["End_Date", latest_date],
         ["Update_Run", now_wib]
     ])
     print(f"Log diperbarui: data {start_date} s.d. {latest_date}, update {now_wib}")
@@ -221,7 +227,7 @@ if __name__ == "__main__":
             if not gdf.empty:
                 gdf = cluster_points_by_owner(gdf)
                 overwrite_google_sheet(gdf)
-                update_log("2025-01-01", gdf["Integrated_Date"].max().date())
+                update_log("2025-01-01", gdf["Integrated_Date"].max())
             else:
                 print("Tidak ada hasil intersect dari data terbaru.")
         else:
