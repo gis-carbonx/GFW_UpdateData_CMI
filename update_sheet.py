@@ -202,7 +202,7 @@ def append_unique_to_google_sheet(df):
     sheet.append_rows(new_rows.values.tolist(), value_input_option="USER_ENTERED")
     print(f"{len(new_rows)} baris baru berhasil ditambahkan ke Google Sheet.")
 
-def update_last_run_log():
+def update_last_run_log(latest_data_date=None):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     try:
@@ -213,14 +213,22 @@ def update_last_run_log():
 
     wib = timezone(timedelta(hours=7))
     now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
-    log_sheet.update("A2:B2", [["Update_Run", now_wib]], value_input_option="USER_ENTERED")
-    print(f"Log diperbarui: {now_wib}")
+
+    if latest_data_date:
+        log_sheet.update("A2:B2", [["Last_Data_Date", str(latest_data_date)]], value_input_option="USER_ENTERED")
+        log_sheet.update("A3:B3", [["Update_Run", now_wib]], value_input_option="USER_ENTERED")
+        print(f"Log diperbarui: data terakhir {latest_data_date}, waktu update {now_wib}")
+    else:
+        log_sheet.update("A2:B2", [["Update_Run", now_wib]], value_input_option="USER_ENTERED")
+        print(f"Log diperbarui: {now_wib}")
 
 if __name__ == "__main__":
     last_date = get_last_update_date()
     df = fetch_gfw_data_since(last_date)
 
+    latest_data_date = None
     if not df.empty:
+        latest_data_date = df["Integrated_Date"].max().date()
         df = clip_with_aoi(df, AOI_PATH)
 
         if not df.empty:
@@ -236,5 +244,5 @@ if __name__ == "__main__":
             print("Tidak ada data dalam area AOI.")
     else:
         print("Tidak ada data baru dari GFW.")
-    update_last_run_log()
 
+    update_last_run_log(latest_data_date)
