@@ -204,26 +204,22 @@ def overwrite_google_sheet(df):
 def update_log(start_date, latest_date):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
+
     try:
         log_sheet = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
         log_sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=LOG_SHEET_NAME, rows=10, cols=2)
 
     wib = timezone(timedelta(hours=7))
-    now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
+    now_wib = datetime.now(wib).strftime("%d/%m/%Y %H:%M")
 
-    if not isinstance(latest_date, str):
-        try:
-            latest_date = latest_date.strftime("%Y-%m-%d")
-        except Exception:
-            latest_date = str(latest_date)
+    log_sheet.clear()
+    log_sheet.append_rows([
+        ["Note", "Last Update"],
+        ["Update", now_wib]
+    ], value_input_option="USER_ENTERED")
 
-    log_sheet.update("A1:B3", [
-        ["Start_Date", start_date],
-        ["End_Date", latest_date],
-        ["Update_Run", now_wib]
-    ])
-    print(f"Log diperbarui: data {start_date} s.d. {latest_date}, update {now_wib}")
+    print(f"Log diperbarui: Last Update {now_wib}")
 
 if __name__ == "__main__":
     df = fetch_gfw_data_from_jan()
