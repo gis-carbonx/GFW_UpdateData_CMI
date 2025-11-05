@@ -109,17 +109,14 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
             layer.set_crs("EPSG:4326", inplace=True)
 
     gdf = gpd.sjoin(gdf, desa, how="left", predicate="within")
-    gdf = gdf.rename(columns={"nama_kel": "Desa"})
-    if "index_right" in gdf.columns:
-        gdf = gdf.drop(columns=["index_right"])
+    gdf.rename(columns={"nama_kel": "Desa"}, inplace=True)
+    gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
-    if "index_right" in gdf.columns:
-        gdf = gdf.drop(columns=["index_right"])
+    gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
-    if "index_right" in gdf.columns:
-        gdf = gdf.drop(columns=["index_right"])
+    gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf = gdf.sort_values(by="Integrated_Date", ascending=True)
     print("Intersect selesai.")
@@ -156,6 +153,8 @@ def cluster_points_by_owner(gdf):
         cluster_gdf["Cluster_X"] = cluster_gdf_centroid.geometry.x.round(5)
 
         joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
+        joined.drop(columns=["index_right"], inplace=True, errors="ignore")
+
         cluster_count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
         cluster_count["Luas_Ha"] = (cluster_count["Jumlah_Titik"] * 10 / 10000).round(4)
 
@@ -169,11 +168,29 @@ def cluster_points_by_owner(gdf):
     final_gdf.drop(columns=["buffer", "geometry"], inplace=True, errors="ignore")
 
     final_gdf["Luas"] = 10
-
     final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
     print(f"Clustering selesai ({len(final_gdf)} baris).")
     print(f"Tanggal maksimum setelah clustering: {final_gdf['Integrated_Date'].max()}")
     return final_gdf
+
+def add_desa_cluster_column(gdf, desa_path):
+    print("Menambahkan kolom Desa_Cluster berdasarkan koordinat Cluster_X dan Cluster_Y...")
+    desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
+    desa = desa.to_crs(epsg=4326)
+
+    cluster_points = gpd.GeoDataFrame(
+        gdf[["Cluster_ID", "Cluster_X", "Cluster_Y"]].drop_duplicates(),
+        geometry=gpd.points_from_xy(gdf["Cluster_X"], gdf["Cluster_Y"]),
+        crs="EPSG:4326"
+    )
+
+    joined = gpd.sjoin(cluster_points, desa, how="left", predicate="within")
+    joined.rename(columns={"nama_kel": "Desa_Cluster"}, inplace=True)
+    joined.drop(columns=["index_right"], inplace=True, errors="ignore")
+
+    gdf = gdf.merge(joined[["Cluster_ID", "Desa_Cluster"]], on="Cluster_ID", how="left")
+    print("Kolom Desa_Cluster berhasil ditambahkan.")
+    return gdf
 
 def overwrite_google_sheet(df):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
@@ -230,6 +247,7 @@ if __name__ == "__main__":
             gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
             if not gdf.empty:
                 gdf = cluster_points_by_owner(gdf)
+                gdf = add_desa_cluster_column(gdf, DESA_PATH)
                 overwrite_google_sheet(gdf)
                 update_log("2025-01-01", gdf["Integrated_Date"].max())
             else:
