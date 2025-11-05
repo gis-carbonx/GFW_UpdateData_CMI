@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
-SHEET_NAME = "Sheet1"
 LOG_SHEET_NAME = "Log_Update"
 
 AOI_PATH = "data/aoi.json"
@@ -24,7 +23,6 @@ def fetch_gfw_data_from_jan():
     wib = timezone(timedelta(hours=7))
     today = datetime.now(wib).strftime("%Y-%m-%d")
     start_date = "2025-01-01"
-
     geometry = {
         "type": "Polygon",
         "coordinates": [[
@@ -169,6 +167,9 @@ def cluster_points_by_owner(gdf):
 
     final_gdf = pd.concat(cluster_results, ignore_index=True).to_crs(epsg=4326)
     final_gdf.drop(columns=["buffer", "geometry"], inplace=True, errors="ignore")
+
+    final_gdf["Luas"] = 10
+
     final_gdf = final_gdf.sort_values(by=["Owner", "Integrated_Date"]).reset_index(drop=True)
     print(f"Clustering selesai ({len(final_gdf)} baris).")
     print(f"Tanggal maksimum setelah clustering: {final_gdf['Integrated_Date'].max()}")
@@ -177,10 +178,17 @@ def cluster_points_by_owner(gdf):
 def overwrite_google_sheet(df):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    sheet.clear()
-    print("Data lama di Google Sheet telah dihapus.")
+    latest_year = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.year.max()
+    sheet_name = str(latest_year)
+
+    try:
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
+        print(f"Menulis data ke sheet '{sheet_name}'.")
+        sheet.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"Sheet '{sheet_name}' belum ada, membuat sheet baru...")
+        sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=sheet_name, rows=1000, cols=20)
 
     if df.empty:
         print("Tidak ada data baru untuk ditulis.")
@@ -191,7 +199,7 @@ def overwrite_google_sheet(df):
 
     header = list(df.columns)
     sheet.append_rows([header] + df.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"{len(df)} baris baru berhasil ditulis ke Google Sheet.")
+    print(f"{len(df)} baris baru berhasil ditulis ke Google Sheet ({sheet_name}).")
 
 def update_log(start_date, latest_date):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
