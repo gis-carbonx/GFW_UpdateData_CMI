@@ -7,6 +7,7 @@ from shapely.geometry import shape, Point
 from shapely.ops import unary_union
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
+import numpy as np
 
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
@@ -105,14 +106,11 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
 
     gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").rename(columns={"nama_kel": "Desa"})
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    gdf = gdf.sort_values(by="Integrated_Date", ascending=True)
     print("Intersect selesai.")
     print(f"Tanggal maksimum setelah intersect: {gdf['Integrated_Date'].max().date()}")
     return gdf
@@ -192,13 +190,17 @@ def overwrite_google_sheet(df):
         sheet.clear()
         print(f"Menulis data ke sheet '{sheet_name}'.")
     except gspread.exceptions.WorksheetNotFound:
-        print(f"Sheet '{sheet_name}' belum ada, membuat sheet baru...")
         sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=sheet_name, rows=1000, cols=20)
 
-    if df.empty:
-        print("Tidak ada data baru untuk ditulis.")
-        return
+    keep_cols = [
+        "latitude", "longitude", "Integrated_Date", "Integrated_Alert",
+        "Desa", "Owner", "Blok", "Cluster_ID",
+        "Cluster_Y", "Cluster_X", "Desa_Cluster",
+        "Jumlah_Titik", "Luas_Ha", "Luas"
+    ]
+    df = df[keep_cols].copy()
 
+    df = df.replace([np.inf, -np.inf], np.nan).fillna("")
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     df = df.astype(str)
 
@@ -229,6 +231,7 @@ def merge_sheets_to_db():
         return
 
     df = pd.DataFrame(all_data)
+    df = df.replace([np.inf, -np.inf], np.nan).fillna("")
     df = df.drop_duplicates().reset_index(drop=True)
 
     try:
@@ -239,6 +242,7 @@ def merge_sheets_to_db():
 
     db_sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
     print(f" Sheet 'Db' berhasil diperbarui ({len(df)} baris total).")
+
 def update_log(start_date, latest_date):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
