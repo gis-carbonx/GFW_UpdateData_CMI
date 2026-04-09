@@ -213,7 +213,7 @@ def merge_sheets_to_db():
     client = gspread.authorize(creds)
     sh = client.open_by_key(SPREADSHEET_ID)
 
-    sheets_to_merge = ["2023", "2024", "2025"]
+    sheets_to_merge = ["2023", "2024", "2025","2026"]
     all_data = []
 
     for name in sheets_to_merge:
