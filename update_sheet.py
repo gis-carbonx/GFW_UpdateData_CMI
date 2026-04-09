@@ -253,7 +253,7 @@ def update_log(start_date, latest_date):
         log_sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=LOG_SHEET_NAME, rows=10, cols=2)
 
     wib = timezone(timedelta(hours=7))
-    now_wib = datetime.now(wib).strftime("%d/%m/%Y %H:%M")
+    now_wib = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
 
     log_sheet.clear()
     log_sheet.append_rows([
