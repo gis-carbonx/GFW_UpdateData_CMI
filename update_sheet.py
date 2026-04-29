@@ -12,7 +12,6 @@ import numpy as np
 # ================= CONFIG =================
 API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
-LOG_SHEET_NAME = "Log_Update"
 
 AOI_PATH = "data/aoi.json"
 DESA_PATH = "data/Desa.json"
@@ -21,11 +20,11 @@ BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ================= FETCH MULTI SOURCE =================
+# ================= FETCH =================
 def fetch_all_alerts():
     wib = timezone(timedelta(hours=7))
     today = datetime.now(wib).strftime("%Y-%m-%d")
-    start_date = "2026-01-01"
+    start_date = "2025-01-01"
 
     geometry = {
         "type": "Polygon",
@@ -48,9 +47,9 @@ def fetch_all_alerts():
             return pd.DataFrame()
         return pd.DataFrame(resp.json().get("data", []))
 
-    print("=== FETCH MULTI SOURCE (GLAD + RADD + INTEGRATED) ===")
+    print("=== FETCH MULTI SOURCE ===")
 
-    # --- INTEGRATED
+    # Integrated
     df_int = hit_api(
         "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query",
         f"""
@@ -64,7 +63,7 @@ def fetch_all_alerts():
     )
     df_int["Source"] = "INTEGRATED"
 
-    # --- GLAD
+    # GLAD
     df_glad = hit_api(
         "https://data-api.globalforestwatch.org/dataset/glad_alerts/latest/query",
         f"""
@@ -76,9 +75,8 @@ def fetch_all_alerts():
         """
     )
     df_glad["Source"] = "GLAD"
-    df_glad["confidence"] = "sensor"
 
-    # --- RADD
+    # RADD
     df_radd = hit_api(
         "https://data-api.globalforestwatch.org/dataset/radd_alerts/latest/query",
         f"""
@@ -90,15 +88,14 @@ def fetch_all_alerts():
         """
     )
     df_radd["Source"] = "RADD"
-    df_radd["confidence"] = "sensor"
 
-    df_all = pd.concat([df_int, df_glad, df_radd], ignore_index=True)
+    df = pd.concat([df_int, df_glad, df_radd], ignore_index=True)
 
-    df_all["date"] = pd.to_datetime(df_all["date"], errors="coerce")
-    df_all = df_all.dropna(subset=["latitude", "longitude", "date"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["latitude", "longitude", "date"])
 
-    print(f"Total data: {len(df_all)}")
-    return df_all
+    print("Total raw:", len(df))
+    return df
 
 # ================= FUSION =================
 def classify_confidence(n):
@@ -106,12 +103,11 @@ def classify_confidence(n):
         return "very_high"
     elif n == 2:
         return "high"
-    elif n == 1:
+    else:
         return "low"
-    return "unknown"
 
 def fuse_sources(df):
-    print("=== FUSION MULTI SOURCE ===")
+    print("=== FUSION ===")
 
     gdf = gpd.GeoDataFrame(
         df,
@@ -140,53 +136,64 @@ def fuse_sources(df):
             "Source_Count": len(sources)
         })
 
-    df_out = pd.DataFrame(records).drop_duplicates()
-    df_out["Integrated_Date"] = pd.to_datetime(df_out["Integrated_Date"])
+    df_out = pd.DataFrame(records).drop_duplicates(
+        subset=["latitude","longitude","Integrated_Date"]
+    )
+
+    print("After fusion:", len(df_out))
     return df_out
 
-# ================= AOI CLIP =================
-def clip_with_aoi(df, aoi_path):
-    with open(aoi_path, "r") as f:
-        aoi_geojson = json.load(f)
+# ================= AOI =================
+def clip_with_aoi(df):
+    with open(AOI_PATH) as f:
+        aoi = shape(json.load(f)["features"][0]["geometry"])
 
-    aoi_polygon = shape(aoi_geojson["features"][0]["geometry"])
-
-    inside = [
-        row for _, row in df.iterrows()
-        if aoi_polygon.contains(Point(row["longitude"], row["latitude"]))
+    df = df[
+        df.apply(lambda r: aoi.contains(Point(r["longitude"], r["latitude"])), axis=1)
     ]
 
-    return pd.DataFrame(inside)
+    print("After AOI:", len(df))
+    return df
 
 # ================= INTERSECT =================
-def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
+def intersect_with_geojson(df):
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
 
-    desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
-    pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
-    blok = gpd.read_file(blok_path)[["Blok", "geometry"]]
+    desa = gpd.read_file(DESA_PATH)[["nama_kel","geometry"]]
+    pemilik = gpd.read_file(PEMILIK_PATH)[["Owner","geometry"]]
+    blok = gpd.read_file(BLOK_PATH)[["Blok","geometry"]]
 
-    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").rename(columns={"nama_kel": "Desa"})
-    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
-    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
+    # FIX: pakai intersects (lebih robust)
+    gdf = gpd.sjoin(gdf, desa, how="left", predicate="intersects").rename(columns={"nama_kel":"Desa"})
+    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="intersects")
+    gdf = gpd.sjoin(gdf, blok, how="left", predicate="intersects")
+
+    # FIX: jangan hilang data
+    gdf["Owner"] = gdf["Owner"].fillna("Unknown")
+
+    print("After intersect:", len(gdf))
+    print("Owner kosong:", (gdf["Owner"]=="Unknown").sum())
 
     return gdf
 
 # ================= CLUSTER =================
 def cluster_points_by_owner(gdf):
+    print("=== CLUSTER ===")
+
     gdf = gdf.to_crs(epsg=32749)
     results = []
 
-    for (owner, tanggal), group in gdf.groupby(["Owner", "Integrated_Date"]):
-        if pd.isna(owner):
+    for (owner, tanggal), group in gdf.groupby(["Owner","Integrated_Date"]):
+        if group.empty:
             continue
 
+        group = group.copy()
         group["buffer"] = group.geometry.buffer(11)
         union_poly = unary_union(group["buffer"])
 
-        clusters = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
+        clusters = [union_poly] if union_poly.geom_type=="Polygon" else list(union_poly.geoms)
 
-        cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
+        cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=gdf.crs)
         cluster_gdf["Cluster_ID"] = [f"{owner}_{tanggal}_{i+1}" for i in range(len(cluster_gdf))]
 
         centroid = cluster_gdf.geometry.centroid.to_crs(epsg=4326)
@@ -200,12 +207,21 @@ def cluster_points_by_owner(gdf):
 
         results.append(joined)
 
-    return pd.concat(results).to_crs(4326)
+    if not results:
+        print("Cluster kosong!")
+        return gdf.to_crs(4326)
 
-# ================= GOOGLE SHEET =================
+    final = pd.concat(results).to_crs(4326)
+    print("After cluster:", len(final))
+    return final
+
+# ================= SHEET =================
 def overwrite_google_sheet(df):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
+
+    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
+    df = df.dropna(subset=["Integrated_Date"])
 
     year = df["Integrated_Date"].dt.year.max()
     sheet_name = str(year)
@@ -216,8 +232,6 @@ def overwrite_google_sheet(df):
     except:
         sheet = client.open_by_key(SPREADSHEET_ID).add_worksheet(title=sheet_name, rows=1000, cols=20)
 
-    df["Integrated_Date"] = df["Integrated_Date"].dt.strftime("%Y-%m-%d")
-
     cols = [
         "latitude","longitude","Integrated_Date","Integrated_Alert",
         "Source_Detail","Source_Count",
@@ -226,8 +240,12 @@ def overwrite_google_sheet(df):
     ]
 
     df = df[cols].fillna("").astype(str)
+    data = [cols] + df.values.tolist()
 
-    sheet.append_rows([cols] + df.values.tolist())
+    # aman untuk <5000
+    sheet.append_rows(data, value_input_option="USER_ENTERED")
+
+    print("Berhasil tulis:", len(df))
 
 # ================= MAIN =================
 if __name__ == "__main__":
@@ -235,15 +253,18 @@ if __name__ == "__main__":
 
     if not df_raw.empty:
         df = fuse_sources(df_raw)
-        df = clip_with_aoi(df, AOI_PATH)
+        df = clip_with_aoi(df)
 
         if not df.empty:
-            gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
+            gdf = intersect_with_geojson(df)
             gdf = cluster_points_by_owner(gdf)
-            overwrite_google_sheet(gdf)
 
-            print("Pipeline selesai.")
+            if not gdf.empty:
+                overwrite_google_sheet(gdf)
+                print("Pipeline selesai.")
+            else:
+                print("Gagal di cluster.")
         else:
-            print("Tidak ada data dalam AOI.")
+            print("Gagal di AOI.")
     else:
         print("Tidak ada data.")
