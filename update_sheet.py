@@ -25,7 +25,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 def fetch_all_alerts():
     wib = timezone(timedelta(hours=7))
     today = datetime.now(wib).strftime("%Y-%m-%d")
-    start_date = "2025-01-01"
+    start_date = "2026-01-01"
 
     geometry = {
         "type": "Polygon",
