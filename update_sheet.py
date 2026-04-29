@@ -150,7 +150,7 @@ def fetch_dist_alert(start_date, today):
 def fetch_all_gfw_data():
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
-    start_date = "2026-01-01"
+    start_date = "2023-01-01"
 
     print(f"\n{'='*60}")
     print(f"Fetching semua dataset GFW: {start_date} → {today}")
