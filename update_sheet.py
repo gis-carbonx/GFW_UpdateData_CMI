@@ -31,52 +31,56 @@ GEOMETRY = {
     ]]
 }
 
-# ─── Konfigurasi dataset ───────────────────────────────────────────────────────
 ALERT_DATASETS = [
     {
         "name": "INTEGRATED",
         "dataset": "gfw_integrated_alerts",
         "date_field": "gfw_integrated_alerts__date",
         "conf_field": "gfw_integrated_alerts__confidence",
-        "source_label": "INTEGRATED"
+        "source_label": "INTEGRATED",
+        "alert_type": "Deforestation"
     },
     {
         "name": "GLAD-L",
         "dataset": "umd_glad_landsat_alerts",
         "date_field": "umd_glad_landsat_alerts__date",
         "conf_field": "umd_glad_landsat_alerts__confidence",
-        "source_label": "GLAD-L"
+        "source_label": "GLAD-L",
+        "alert_type": "Deforestation"
     },
     {
         "name": "GLAD-S2",
         "dataset": "umd_glad_sentinel2_alerts",
         "date_field": "umd_glad_sentinel2_alerts__date",
         "conf_field": "umd_glad_sentinel2_alerts__confidence",
-        "source_label": "GLAD-S2"
+        "source_label": "GLAD-S2",
+        "alert_type": "Deforestation"
     },
     {
         "name": "RADD",
         "dataset": "wur_radd_alerts",
         "date_field": "wur_radd_alerts__date",
         "conf_field": "wur_radd_alerts__confidence",
-        "source_label": "RADD"
+        "source_label": "RADD",
+        "alert_type": "Deforestation"
     },
     {
         "name": "DIST-ALERT",
         "dataset": "umd_dist_alerts",
         "date_field": "umd_dist_alerts__date",
         "conf_field": "umd_dist_alerts__confidence",
-        "source_label": "DIST-ALERT"
+        "source_label": "DIST-ALERT",
+        "alert_type": "Disturbance"
     },
 ]
 
 
-# ─── Fetch satu dataset dari GFW ──────────────────────────────────────────────
+# ─── Fetch satu dataset ────────────────────────────────────────────────────────
 def fetch_single_dataset(cfg, start_date, today):
-    dataset  = cfg["dataset"]
-    date_f   = cfg["date_field"]
-    conf_f   = cfg["conf_field"]
-    label    = cfg["source_label"]
+    dataset = cfg["dataset"]
+    date_f  = cfg["date_field"]
+    conf_f  = cfg["conf_field"]
+    label   = cfg["source_label"]
 
     sql = f"""
     SELECT longitude, latitude, {date_f}, {conf_f}
@@ -85,11 +89,11 @@ def fetch_single_dataset(cfg, start_date, today):
       AND {date_f} <= '{today}'
     """
 
-    url = f"https://data-api.globalforestwatch.org/dataset/{dataset}/latest/query"
+    url     = f"https://data-api.globalforestwatch.org/dataset/{dataset}/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body = {"geometry": GEOMETRY, "sql": sql}
+    body    = {"geometry": GEOMETRY, "sql": sql}
 
-    print(f"  → Fetching {label} dari {start_date} hingga {today}...")
+    print(f"  → Fetching {label} ...")
     resp = requests.post(url, headers=headers, json=body)
 
     if resp.status_code != 200:
@@ -104,22 +108,17 @@ def fetch_single_dataset(cfg, start_date, today):
     df = pd.DataFrame(data)
     df.rename(columns={date_f: "Integrated_Date", conf_f: "Integrated_Alert"}, inplace=True)
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-    df["Source"] = label
+    df["Source"]          = label
+    df["Alert_Type"]      = cfg["alert_type"]
 
-    # Tandai alert type
-    if label == "DIST-ALERT":
-        df["Alert_Type"] = "Disturbance"
-    else:
-        df["Alert_Type"] = "Deforestation"
-
-    print(f"    [OK] {len(df)} baris, terbaru: {df['Integrated_Date'].max().date()}")
+    print(f"    [OK] {len(df)} baris | terbaru: {df['Integrated_Date'].max().date()}")
     return df
 
 
 # ─── Fetch semua dataset ───────────────────────────────────────────────────────
 def fetch_all_gfw_data():
-    wib = timezone(timedelta(hours=7))
-    today = datetime.now(wib).strftime("%Y-%m-%d")
+    wib        = timezone(timedelta(hours=7))
+    today      = datetime.now(wib).strftime("%Y-%m-%d")
     start_date = "2026-01-01"
 
     print(f"\n{'='*60}")
@@ -138,6 +137,8 @@ def fetch_all_gfw_data():
 
     combined = pd.concat(frames, ignore_index=True)
     print(f"\nTotal gabungan: {len(combined)} baris dari {len(frames)} dataset.")
+    print("\nRingkasan per Source:")
+    print(combined.groupby(["Source", "Alert_Type"]).size().to_string())
     return combined
 
 
@@ -161,10 +162,8 @@ def clip_with_aoi(df, aoi_path):
         return pd.DataFrame()
 
     clipped_df = pd.DataFrame(inside)
-    print(f"{len(clipped_df)} titik berada di dalam AOI.")
+    print(f"\n{len(clipped_df)} titik berada di dalam AOI.")
     print(f"Tanggal maksimum dalam AOI: {clipped_df['Integrated_Date'].max().date()}")
-
-    # Ringkasan per source
     print("\nRingkasan per Source dalam AOI:")
     print(clipped_df.groupby(["Source", "Alert_Type"]).size().to_string())
     return clipped_df
@@ -195,17 +194,13 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    print("\nIntersect selesai.")
+    print(f"\nIntersect selesai.")
     print(f"Tanggal maksimum setelah intersect: {gdf['Integrated_Date'].max().date()}")
     return gdf
 
 
-# ─── Clustering per Owner, tanggal, DAN source ────────────────────────────────
+# ─── Clustering per Owner + tanggal + Source ──────────────────────────────────
 def cluster_points_by_owner(gdf):
-    """
-    Clustering dilakukan per kombinasi (Owner, Integrated_Date, Source)
-    agar titik dari dataset berbeda tidak digabung dalam cluster yang sama.
-    """
     print("\nMelakukan clustering berdasarkan Owner, tanggal, dan Source...")
     gdf = gdf.to_crs(epsg=32749)
     cluster_results = []
@@ -220,9 +215,9 @@ def cluster_points_by_owner(gdf):
         if union_poly.is_empty:
             continue
 
-        clusters = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
+        clusters    = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
         tanggal_str = pd.to_datetime(tanggal).strftime("%Y-%m-%d")
-        src_short = source.replace("-", "")  # misal GLADL, GLADS2, RADD, dst
+        src_short   = source.replace("-", "")
 
         cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
         cluster_gdf["Cluster_ID"] = [
@@ -252,7 +247,6 @@ def cluster_points_by_owner(gdf):
 
     print(f"Clustering selesai ({len(final)} baris).")
     print(f"Tanggal maksimum setelah clustering: {final['Integrated_Date'].max()}")
-
     print("\nRingkasan cluster per Source:")
     print(final.groupby("Source")["Cluster_ID"].nunique().to_string())
     return final
@@ -279,7 +273,7 @@ def add_desa_cluster_column(gdf, desa_path):
     return gdf
 
 
-# ─── Tulis ke Google Sheet (per tahun, dipisah per source) ────────────────────
+# ─── Tulis ke Google Sheet (satu sheet per tahun) ─────────────────────────────
 def overwrite_google_sheet(df):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -297,30 +291,21 @@ def overwrite_google_sheet(df):
     ]
     df = df[keep_cols].copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna("")
-    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["Integrated_Date"] = pd.to_datetime(
+        df["Integrated_Date"], errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
     df = df.astype(str)
 
-    # ── Sheet gabungan tahun (misal "2026") ──
     try:
         sheet = sh.worksheet(sheet_name)
         sheet.clear()
+        print(f"\nSheet '{sheet_name}' ditemukan dan dikosongkan.")
     except gspread.exceptions.WorksheetNotFound:
         sheet = sh.add_worksheet(title=sheet_name, rows=5000, cols=25)
+        print(f"\nSheet '{sheet_name}' dibuat baru.")
 
     sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"\n{len(df)} baris ditulis ke sheet '{sheet_name}'.")
-
-    # ── Sheet per Source (misal "2026_GLAD-L", "2026_RADD", dst) ──
-    for source_name, grp in df.groupby("Source"):
-        tab_name = f"{latest_year}_{source_name}"
-        try:
-            ws = sh.worksheet(tab_name)
-            ws.clear()
-        except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title=tab_name, rows=5000, cols=25)
-
-        ws.append_rows([list(grp.columns)] + grp.values.tolist(), value_input_option="USER_ENTERED")
-        print(f"  → {len(grp)} baris ke sheet '{tab_name}'.")
+    print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
 
 # ─── Merge semua tahun ke sheet Db ────────────────────────────────────────────
@@ -329,10 +314,10 @@ def merge_sheets_to_db():
     client = gspread.authorize(creds)
     sh     = client.open_by_key(SPREADSHEET_ID)
 
-    # Hanya merge sheet tahun (bukan per-source)
     sheets_to_merge = ["2023", "2024", "2025", "2026"]
     all_data = []
 
+    print("\nMerge sheet ke Db:")
     for name in sheets_to_merge:
         try:
             ws   = sh.worksheet(name)
@@ -358,7 +343,7 @@ def merge_sheets_to_db():
         db_sheet = sh.add_worksheet(title="Db", rows=10000, cols=25)
 
     db_sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"\nSheet 'Db' diperbarui: {len(df)} baris total.")
+    print(f"Sheet 'Db' diperbarui: {len(df)} baris total.")
 
 
 # ─── Update log ───────────────────────────────────────────────────────────────
