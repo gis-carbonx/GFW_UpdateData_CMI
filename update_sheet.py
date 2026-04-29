@@ -31,7 +31,6 @@ GEOMETRY = {
     ]]
 }
 
-# Dataset deforestation alert (field date & confidence mandiri)
 ALERT_DATASETS = [
     {
         "name": "INTEGRATED",
@@ -68,7 +67,6 @@ ALERT_DATASETS = [
 ]
 
 
-# ─── Fetch dataset deforestation biasa ────────────────────────────────────────
 def fetch_single_dataset(cfg, start_date, today):
     dataset = cfg["dataset"]
     date_f  = cfg["date_field"]
@@ -103,26 +101,17 @@ def fetch_single_dataset(cfg, start_date, today):
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
     df["Source"]          = label
     df["Alert_Type"]      = cfg["alert_type"]
-    df["Intensity"]       = ""   # kolom ini hanya diisi oleh DIST-ALERT
 
     print(f"    [OK] {len(df)} baris | terbaru: {df['Integrated_Date'].max().date()}")
     return df
 
 
-# ─── Fetch DIST-ALERT (field berbeda dari dataset lain) ───────────────────────
 def fetch_dist_alert(start_date, today):
-    """
-    Dataset : umd_glad_dist_alerts
-    Field tanggal   : umd_glad_landsat_alerts__date   (bukan umd_dist_alerts__date)
-    Field confidence: umd_glad_landsat_alerts__confidence
-    Field khusus    : umd_glad_dist_alerts__intensity
-    """
     label = "DIST-ALERT"
     sql = f"""
     SELECT longitude, latitude,
            umd_glad_landsat_alerts__date,
-           umd_glad_landsat_alerts__confidence,
-           umd_glad_dist_alerts__intensity
+           umd_glad_landsat_alerts__confidence
     FROM results
     WHERE umd_glad_landsat_alerts__date >= '{start_date}'
       AND umd_glad_landsat_alerts__date <= '{today}'
@@ -147,8 +136,7 @@ def fetch_dist_alert(start_date, today):
     df = pd.DataFrame(data)
     df.rename(columns={
         "umd_glad_landsat_alerts__date":       "Integrated_Date",
-        "umd_glad_landsat_alerts__confidence": "Integrated_Alert",
-        "umd_glad_dist_alerts__intensity":     "Intensity"
+        "umd_glad_landsat_alerts__confidence": "Integrated_Alert"
     }, inplace=True)
 
     df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
@@ -159,7 +147,6 @@ def fetch_dist_alert(start_date, today):
     return df
 
 
-# ─── Fetch semua dataset ───────────────────────────────────────────────────────
 def fetch_all_gfw_data():
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
@@ -170,14 +157,11 @@ def fetch_all_gfw_data():
     print(f"{'='*60}")
 
     frames = []
-
-    # Deforestation alerts
     for cfg in ALERT_DATASETS:
         df = fetch_single_dataset(cfg, start_date, today)
         if not df.empty:
             frames.append(df)
 
-    # Disturbance alert (fetch terpisah karena field berbeda)
     df_dist = fetch_dist_alert(start_date, today)
     if not df_dist.empty:
         frames.append(df_dist)
@@ -188,18 +172,12 @@ def fetch_all_gfw_data():
 
     combined = pd.concat(frames, ignore_index=True)
 
-    # Pastikan kolom Intensity ada di semua baris
-    if "Intensity" not in combined.columns:
-        combined["Intensity"] = ""
-    combined["Intensity"] = combined["Intensity"].fillna("")
-
     print(f"\nTotal gabungan: {len(combined)} baris dari {len(frames)} dataset.")
     print("\nRingkasan per Source:")
     print(combined.groupby(["Source", "Alert_Type"]).size().to_string())
     return combined
 
 
-# ─── Clip ke AOI ──────────────────────────────────────────────────────────────
 def clip_with_aoi(df, aoi_path):
     try:
         with open(aoi_path, "r") as f:
@@ -226,7 +204,6 @@ def clip_with_aoi(df, aoi_path):
     return clipped_df
 
 
-# ─── Intersect dengan layer spasial ───────────────────────────────────────────
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gpd.GeoDataFrame(
         df,
@@ -256,7 +233,6 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     return gdf
 
 
-# ─── Clustering per Owner + tanggal + Source ──────────────────────────────────
 def cluster_points_by_owner(gdf):
     print("\nMelakukan clustering berdasarkan Owner, tanggal, dan Source...")
     gdf = gdf.to_crs(epsg=32749)
@@ -309,7 +285,6 @@ def cluster_points_by_owner(gdf):
     return final
 
 
-# ─── Tambah Desa_Cluster ──────────────────────────────────────────────────────
 def add_desa_cluster_column(gdf, desa_path):
     print("\nMenambahkan kolom Desa_Cluster...")
     desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]].to_crs(epsg=4326)
@@ -330,7 +305,6 @@ def add_desa_cluster_column(gdf, desa_path):
     return gdf
 
 
-# ─── Tulis ke Google Sheet ────────────────────────────────────────────────────
 def overwrite_google_sheet(df):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -341,7 +315,7 @@ def overwrite_google_sheet(df):
 
     keep_cols = [
         "latitude", "longitude", "Integrated_Date", "Integrated_Alert",
-        "Source", "Alert_Type", "Intensity",
+        "Source", "Alert_Type",
         "Desa", "Owner", "Blok", "Cluster_ID",
         "Cluster_Y", "Cluster_X", "Desa_Cluster",
         "Jumlah_Titik", "Luas_Ha", "Luas"
@@ -365,7 +339,6 @@ def overwrite_google_sheet(df):
     print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
 
-# ─── Merge semua tahun ke sheet Db ────────────────────────────────────────────
 def merge_sheets_to_db():
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -403,7 +376,6 @@ def merge_sheets_to_db():
     print(f"Sheet 'Db' diperbarui: {len(df)} baris total.")
 
 
-# ─── Update log ───────────────────────────────────────────────────────────────
 def update_log(latest_date):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -426,7 +398,6 @@ def update_log(latest_date):
     print(f"\nLog diperbarui: {now_wib} | Latest alert: {latest_date}")
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     df = fetch_all_gfw_data()
 
