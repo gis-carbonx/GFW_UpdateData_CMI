@@ -18,87 +18,68 @@ PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-PAGE_SIZE = 500
 
 
 def load_aoi_geometry(aoi_path):
     with open(aoi_path, "r") as f:
         aoi_geojson = json.load(f)
-    feature    = aoi_geojson["features"][0]
-    geom_dict  = feature["geometry"]
-    geom_shape = shape(geom_dict)
+    feature     = aoi_geojson["features"][0]
+    geom_dict   = feature["geometry"]
+    geom_shape  = shape(geom_dict)
     print(f"AOI dimuat: {aoi_path} | tipe: {geom_dict['type']}")
     return geom_shape, geom_dict
 
 
-# ─── Fetch integrated alerts dengan semua kolom per sumber ────────────────────
-def fetch_integrated_alerts(aoi_geom_dict):
-    """
-    Fetch dari satu endpoint gfw_integrated_alerts.
-    Kolom yang diambil mencakup confidence per sumber (GLAD-L, GLAD-S2, RADD, DIST-ALERT)
-    sesuai dengan yang tersedia saat download langsung dari GFW web.
-    """
+def fetch_gfw_data(aoi_geom_dict):
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
     start_date = "2026-01-01"
 
-    url     = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
-    headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-
-    base_sql = f"""
+    # Satu query, semua field confidence per sensor sekaligus
+    sql = f"""
     SELECT
         longitude,
         latitude,
         gfw_integrated_alerts__date,
+        gfw_integrated_alerts__confidence,
         umd_glad_landsat_alerts__confidence,
         umd_glad_sentinel2_alerts__confidence,
-        wur_radd_alerts__confidence,
-        gfw_integrated_dist_alerts__confidence
+        wur_radd_alerts__confidence
     FROM results
     WHERE gfw_integrated_alerts__date >= '{start_date}'
       AND gfw_integrated_alerts__date <= '{today}'
     """
 
-    print(f"\n{'='*60}")
-    print(f"Fetching gfw_integrated_alerts: {start_date} → {today}")
-    print(f"{'='*60}")
+    url     = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
+    headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
+    body    = {"geometry": aoi_geom_dict, "sql": sql}
 
-    all_rows = []
-    offset   = 0
-    page     = 1
+    print(f"\nFetching integrated alerts: {start_date} → {today} ...")
+    resp = requests.post(url, headers=headers, json=body)
 
-    while True:
-        sql  = f"{base_sql} LIMIT {PAGE_SIZE} OFFSET {offset}"
-        body = {"geometry": aoi_geom_dict, "sql": sql}
-        resp = requests.post(url, headers=headers, json=body)
-
-        if resp.status_code != 200:
-            print(f"  [ERROR {resp.status_code}] halaman {page}: {resp.text[:300]}")
-            break
-
-        data = resp.json().get("data", [])
-        if not data:
-            print(f"  Selesai di halaman {page} (tidak ada data lagi).")
-            break
-
-        all_rows.extend(data)
-        print(f"  halaman {page}: {len(data)} baris (total: {len(all_rows)})")
-
-        if len(data) < PAGE_SIZE:
-            break
-
-        offset += PAGE_SIZE
-        page   += 1
-
-    if not all_rows:
-        print("Tidak ada data dari gfw_integrated_alerts.")
+    if resp.status_code != 200:
+        print(f"[ERROR {resp.status_code}]: {resp.text[:300]}")
         return pd.DataFrame()
 
-    df = pd.DataFrame(all_rows)
-    df.rename(columns={"gfw_integrated_alerts__date": "Integrated_Date"}, inplace=True)
-    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
+    data = resp.json().get("data", [])
+    if not data:
+        print("Tidak ada data dari GFW.")
+        return pd.DataFrame()
 
-    print(f"\nTotal: {len(df)} baris | terbaru: {df['Integrated_Date'].max().date()}")
+    df = pd.DataFrame(data)
+    df.rename(columns={
+        "gfw_integrated_alerts__date":              "Date",
+        "gfw_integrated_alerts__confidence":        "Conf_Integrated",
+        "umd_glad_landsat_alerts__confidence":      "Conf_GLADL",
+        "umd_glad_sentinel2_alerts__confidence":    "Conf_GLADS2",
+        "wur_radd_alerts__confidence":              "Conf_RADD",
+    }, inplace=True)
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    print(f"[OK] {len(df)} baris | terbaru: {df['Date'].max().date()}")
+    print("\nRingkasan confidence integrated:")
+    print(df["Conf_Integrated"].value_counts().to_string())
     return df
 
 
@@ -129,7 +110,7 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
 
     print(f"\nIntersect selesai: {len(gdf)} baris.")
-    print(f"Tanggal maksimum: {pd.to_datetime(gdf['Integrated_Date']).max().date()}")
+    print(f"Tanggal maksimum: {pd.to_datetime(gdf['Date']).max().date()}")
     return gdf
 
 
@@ -138,26 +119,17 @@ def overwrite_google_sheet(df):
     client = gspread.authorize(creds)
     sh     = client.open_by_key(SPREADSHEET_ID)
 
-    latest_year = pd.to_datetime(df["Integrated_Date"], errors="coerce").dt.year.max()
+    latest_year = pd.to_datetime(df["Date"], errors="coerce").dt.year.max()
     sheet_name  = str(latest_year)
 
     keep_cols = [
-        "latitude",
-        "longitude",
-        "Integrated_Date",
-        "umd_glad_landsat_alerts__confidence",
-        "umd_glad_sentinel2_alerts__confidence",
-        "wur_radd_alerts__confidence",
-        "gfw_integrated_dist_alerts__confidence",
-        "Desa",
-        "Owner",
-        "Blok"
+        "latitude", "longitude", "Date",
+        "Conf_Integrated", "Conf_GLADL", "Conf_GLADS2", "Conf_RADD",
+        "Desa", "Owner", "Blok"
     ]
     df = df[keep_cols].copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna("")
-    df["Integrated_Date"] = pd.to_datetime(
-        df["Integrated_Date"], errors="coerce"
-    ).dt.strftime("%Y-%m-%d")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     df = df.astype(str)
 
     try:
@@ -234,14 +206,14 @@ def update_log(latest_date):
 if __name__ == "__main__":
     aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
 
-    df = fetch_integrated_alerts(aoi_geom_dict)
+    df = fetch_gfw_data(aoi_geom_dict)
 
     if not df.empty:
         gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
         if not gdf.empty:
             overwrite_google_sheet(gdf)
             merge_sheets_to_db()
-            update_log(gdf["Integrated_Date"].max())
+            update_log(gdf["Date"].max())
         else:
             print("Tidak ada hasil intersect.")
     else:
