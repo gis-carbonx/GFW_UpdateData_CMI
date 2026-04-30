@@ -33,7 +33,7 @@ def load_aoi_geometry(aoi_path):
 def fetch_gfw_data(aoi_geom_dict):
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
-    start_date = "2023-01-01"
+    start_date = "2026-01-01"
 
     sql = f"""
     SELECT
