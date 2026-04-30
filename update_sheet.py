@@ -3,11 +3,13 @@ import pandas as pd
 import geopandas as gpd
 import gspread
 import json
+import numpy as np
+
 from shapely.geometry import shape
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
-import numpy as np
 
+# ================= CONFIG =================
 API_KEY = "YOUR_API_KEY"
 SPREADSHEET_ID = "YOUR_SPREADSHEET_ID"
 LOG_SHEET_NAME = "Log_Update"
@@ -19,110 +21,74 @@ BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# =========================
-# LOAD AOI
-# =========================
-def load_aoi_geometry(aoi_path):
-    with open(aoi_path, "r") as f:
-        aoi_geojson = json.load(f)
-    feature = aoi_geojson["features"][0]
+# ================= LOAD AOI =================
+def load_aoi_geometry(path):
+    with open(path, "r") as f:
+        geojson = json.load(f)
+
+    feature = geojson["features"][0]
     geom_dict = feature["geometry"]
     geom_shape = shape(geom_dict)
+
+    print(f"AOI loaded: {geom_dict['type']}")
     return geom_shape, geom_dict
 
-# =========================
-# FETCH INTEGRATED ALERT
-# =========================
-def fetch_integrated(aoi_geom_dict):
+
+# ================= FETCH GFW =================
+def fetch_gfw_data(aoi_geom_dict):
     wib = timezone(timedelta(hours=7))
     today = datetime.now(wib).strftime("%Y-%m-%d")
     start_date = "2023-01-01"
 
     sql = f"""
-    SELECT longitude, latitude,
-           gfw_integrated_alerts__date,
-           gfw_integrated_alerts__confidence,
-           umd_glad_landsat_alerts__confidence,
-           umd_glad_sentinel2_alerts__confidence,
-           wur_radd_alerts__confidence
+    SELECT
+        longitude,
+        latitude,
+        gfw_integrated_alerts__date,
+        gfw_integrated_alerts__confidence,
+        umd_glad_landsat_alerts__confidence,
+        umd_glad_sentinel2_alerts__confidence,
+        wur_radd_alerts__confidence
     FROM results
     WHERE gfw_integrated_alerts__date >= '{start_date}'
       AND gfw_integrated_alerts__date <= '{today}'
     """
 
     url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
-    headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body = {"geometry": aoi_geom_dict, "sql": sql}
 
-    resp = requests.post(url, headers=headers, json=body)
-    data = resp.json().get("data", [])
+    response = requests.post(
+        url,
+        headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+        json={"geometry": aoi_geom_dict, "sql": sql}
+    )
+
+    if response.status_code != 200:
+        print(f"ERROR {response.status_code}: {response.text[:200]}")
+        return pd.DataFrame()
+
+    data = response.json().get("data", [])
+    if not data:
+        print("No data from GFW")
+        return pd.DataFrame()
 
     df = pd.DataFrame(data)
-    if df.empty:
-        return df
 
     df.rename(columns={
         "gfw_integrated_alerts__date": "Date",
-        "gfw_integrated_alerts__confidence": "Confidence",
+        "gfw_integrated_alerts__confidence": "Conf_Integrated",
+        "umd_glad_landsat_alerts__confidence": "Conf_GLADL",
+        "umd_glad_sentinel2_alerts__confidence": "Conf_GLADS2",
+        "wur_radd_alerts__confidence": "Conf_RADD"
     }, inplace=True)
 
-    df["Source"] = "Integrated"
-    return df
-
-# =========================
-# FETCH DIST ALERT
-# =========================
-def fetch_disturbance(aoi_geom_dict):
-    wib = timezone(timedelta(hours=7))
-    today = datetime.now(wib).strftime("%Y-%m-%d")
-    start_date = "2023-01-01"
-
-    sql = f"""
-    SELECT longitude, latitude,
-           alert_date,
-           confidence,
-           alert_type
-    FROM results
-    WHERE alert_date >= '{start_date}'
-      AND alert_date <= '{today}'
-    """
-
-    url = "https://data-api.globalforestwatch.org/dataset/gfw_disturbance_alerts/latest/query"
-    headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body = {"geometry": aoi_geom_dict, "sql": sql}
-
-    resp = requests.post(url, headers=headers, json=body)
-    data = resp.json().get("data", [])
-
-    df = pd.DataFrame(data)
-    if df.empty:
-        return df
-
-    df.rename(columns={
-        "alert_date": "Date",
-        "confidence": "Confidence",
-        "alert_type": "Dist_Type"
-    }, inplace=True)
-
-    df["Source"] = "DIST"
-    return df
-
-# =========================
-# MERGE BOTH DATA
-# =========================
-def fetch_all_data(aoi_geom_dict):
-    df1 = fetch_integrated(aoi_geom_dict)
-    df2 = fetch_disturbance(aoi_geom_dict)
-
-    df = pd.concat([df1, df2], ignore_index=True)
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
+    print(f"Fetched {len(df)} rows")
     return df
 
-# =========================
-# SPATIAL JOIN
-# =========================
-def intersect_with_geojson(df):
+
+# ================= SPATIAL JOIN =================
+def intersect_data(df):
     gdf = gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df.longitude, df.latitude),
@@ -134,41 +100,115 @@ def intersect_with_geojson(df):
     blok = gpd.read_file(BLOK_PATH)[["Blok", "geometry"]]
 
     for layer in [desa, pemilik, blok]:
-        layer.to_crs("EPSG:4326", inplace=True)
+        layer.set_crs("EPSG:4326", inplace=True, allow_override=True)
 
     gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").rename(columns={"nama_kel": "Desa"})
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
 
-    return gdf.drop(columns=["geometry"])
+    gdf.drop(columns=["geometry", "index_right"], errors="ignore", inplace=True)
 
-# =========================
-# EXPORT
-# =========================
-def overwrite_google_sheet(df):
+    print(f"Spatial join done: {len(gdf)} rows")
+    return gdf
+
+
+# ================= WRITE TO GOOGLE SHEET =================
+def write_to_sheet(df):
     creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     sh = client.open_by_key(SPREADSHEET_ID)
 
-    df = df.fillna("").astype(str)
+    year = str(pd.to_datetime(df["Date"]).dt.year.max())
+
+    columns = [
+        "latitude", "longitude", "Date",
+        "Conf_Integrated", "Conf_GLADL",
+        "Conf_GLADS2", "Conf_RADD",
+        "Desa", "Owner", "Blok"
+    ]
+
+    df = df[columns].copy()
+    df = df.replace([np.inf, -np.inf], np.nan).fillna("")
+    df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
 
     try:
-        sheet = sh.worksheet("All_Data")
+        sheet = sh.worksheet(year)
         sheet.clear()
     except:
-        sheet = sh.add_worksheet(title="All_Data", rows=100000, cols=20)
+        sheet = sh.add_worksheet(title=year, rows=50000, cols=15)
 
-    sheet.append_rows([list(df.columns)] + df.values.tolist())
+    sheet.append_rows([df.columns.tolist()] + df.values.tolist())
+    print(f"Written to sheet {year}")
 
-# =========================
-# MAIN
-# =========================
+
+# ================= MERGE =================
+def merge_to_db():
+    creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+    sh = client.open_by_key(SPREADSHEET_ID)
+
+    years = ["2023", "2024", "2025", "2026"]
+    all_data = []
+
+    for y in years:
+        try:
+            rows = sh.worksheet(y).get_all_records()
+            all_data.extend(rows)
+        except:
+            continue
+
+    if not all_data:
+        return
+
+    df = pd.DataFrame(all_data).drop_duplicates()
+
+    try:
+        db = sh.worksheet("Db")
+        db.clear()
+    except:
+        db = sh.add_worksheet(title="Db", rows=100000, cols=15)
+
+    db.append_rows([df.columns.tolist()] + df.values.tolist())
+    print("DB updated")
+
+
+# ================= LOG =================
+def update_log(latest_date):
+    creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+
+    try:
+        log = client.open_by_key(SPREADSHEET_ID).worksheet(LOG_SHEET_NAME)
+    except:
+        log = client.open_by_key(SPREADSHEET_ID).add_worksheet(
+            title=LOG_SHEET_NAME, rows=10, cols=3
+        )
+
+    now = datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%d %H:%M:%S")
+
+    log.clear()
+    log.append_rows([
+        ["Note", "Last Update", "Latest Alert Date"],
+        ["Update", now, str(latest_date)]
+    ])
+
+    print("Log updated")
+
+
+# ================= MAIN =================
 if __name__ == "__main__":
-    _, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
+    _, aoi_geom = load_aoi_geometry(AOI_PATH)
 
-    df = fetch_all_data(aoi_geom_dict)
+    df = fetch_gfw_data(aoi_geom)
 
     if not df.empty:
-        gdf = intersect_with_geojson(df)
-        overwrite_google_sheet(gdf)
-        print("DONE")
+        gdf = intersect_data(df)
+
+        if not gdf.empty:
+            write_to_sheet(gdf)
+            merge_to_db()
+            update_log(gdf["Date"].max())
+        else:
+            print("No intersect result")
+    else:
+        print("No GFW data")
