@@ -4,6 +4,7 @@ import geopandas as gpd
 import gspread
 import json
 from shapely.geometry import shape, Point
+from shapely.ops import unary_union
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -19,16 +20,19 @@ BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-GEOMETRY = {
-    "type": "Polygon",
-    "coordinates": [[
-        [110.15497, 0.67329],
-        [110.38332, 0.67329],
-        [110.38332, 0.91435],
-        [110.15497, 0.91435],
-        [110.15497, 0.67329]
-    ]]
-}
+
+def load_aoi_geometry(aoi_path):
+    """Baca aoi.json dan kembalikan (shapely_polygon, geojson_geometry_dict)."""
+    with open(aoi_path, "r") as f:
+        aoi_geojson = json.load(f)
+
+    feature = aoi_geojson["features"][0]
+    geom_dict = feature["geometry"]      
+    geom_shape = shape(geom_dict)          
+
+    print(f"AOI dimuat: {aoi_path} | tipe: {geom_dict['type']}")
+    return geom_shape, geom_dict
+
 
 ALERT_DATASETS = [
     {
@@ -66,7 +70,7 @@ ALERT_DATASETS = [
 ]
 
 
-def fetch_single_dataset(cfg, start_date, today):
+def fetch_single_dataset(cfg, start_date, today, aoi_geom_dict):
     dataset = cfg["dataset"]
     date_f  = cfg["date_field"]
     conf_f  = cfg["conf_field"]
@@ -81,7 +85,7 @@ def fetch_single_dataset(cfg, start_date, today):
 
     url     = f"https://data-api.globalforestwatch.org/dataset/{dataset}/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body    = {"geometry": GEOMETRY, "sql": sql}
+    body    = {"geometry": aoi_geom_dict, "sql": sql}  
 
     print(f"  → Fetching {label} ...")
     resp = requests.post(url, headers=headers, json=body)
@@ -105,7 +109,7 @@ def fetch_single_dataset(cfg, start_date, today):
     return df
 
 
-def fetch_dist_alert(start_date, today):
+def fetch_dist_alert(start_date, today, aoi_geom_dict):
     label = "DIST-ALERT"
     sql = f"""
     SELECT longitude, latitude,
@@ -118,7 +122,7 @@ def fetch_dist_alert(start_date, today):
 
     url     = "https://data-api.globalforestwatch.org/dataset/umd_glad_dist_alerts/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body    = {"geometry": GEOMETRY, "sql": sql}
+    body    = {"geometry": aoi_geom_dict, "sql": sql}  
 
     print(f"  → Fetching {label} ...")
     resp = requests.post(url, headers=headers, json=body)
@@ -146,7 +150,7 @@ def fetch_dist_alert(start_date, today):
     return df
 
 
-def fetch_all_gfw_data():
+def fetch_all_gfw_data(aoi_geom_dict):
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
     start_date = "2026-01-01"
@@ -157,11 +161,11 @@ def fetch_all_gfw_data():
 
     frames = []
     for cfg in ALERT_DATASETS:
-        df = fetch_single_dataset(cfg, start_date, today)
+        df = fetch_single_dataset(cfg, start_date, today, aoi_geom_dict)
         if not df.empty:
             frames.append(df)
 
-    df_dist = fetch_dist_alert(start_date, today)
+    df_dist = fetch_dist_alert(start_date, today, aoi_geom_dict)
     if not df_dist.empty:
         frames.append(df_dist)
 
@@ -170,37 +174,10 @@ def fetch_all_gfw_data():
         return pd.DataFrame()
 
     combined = pd.concat(frames, ignore_index=True)
-
     print(f"\nTotal gabungan: {len(combined)} baris dari {len(frames)} dataset.")
     print("\nRingkasan per Source:")
     print(combined.groupby(["Source", "Alert_Type"]).size().to_string())
     return combined
-
-
-def clip_with_aoi(df, aoi_path):
-    try:
-        with open(aoi_path, "r") as f:
-            aoi_geojson = json.load(f)
-        aoi_polygon = shape(aoi_geojson["features"][0]["geometry"])
-    except Exception as e:
-        print(f"Gagal membaca AOI: {e}")
-        return df
-
-    inside = [
-        row for _, row in df.iterrows()
-        if aoi_polygon.contains(Point(row["longitude"], row["latitude"]))
-    ]
-
-    if not inside:
-        print("Tidak ada titik dalam area AOI.")
-        return pd.DataFrame()
-
-    clipped_df = pd.DataFrame(inside)
-    print(f"\n{len(clipped_df)} titik berada di dalam AOI.")
-    print(f"Tanggal maksimum dalam AOI: {clipped_df['Integrated_Date'].max().date()}")
-    print("\nRingkasan per Source dalam AOI:")
-    print(clipped_df.groupby(["Source", "Alert_Type"]).size().to_string())
-    return clipped_df
 
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
@@ -227,7 +204,6 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    # Hapus kolom geometry, tidak diperlukan di sheet
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
 
     print(f"\nIntersect selesai: {len(gdf)} baris.")
@@ -327,19 +303,18 @@ def update_log(latest_date):
 
 
 if __name__ == "__main__":
-    df = fetch_all_gfw_data()
+
+    aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
+
+    df = fetch_all_gfw_data(aoi_geom_dict)
 
     if not df.empty:
-        df = clip_with_aoi(df, AOI_PATH)
-        if not df.empty:
-            gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
-            if not gdf.empty:
-                overwrite_google_sheet(gdf)
-                merge_sheets_to_db()
-                update_log(gdf["Integrated_Date"].max())
-            else:
-                print("Tidak ada hasil intersect.")
+        gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
+        if not gdf.empty:
+            overwrite_google_sheet(gdf)
+            merge_sheets_to_db()
+            update_log(gdf["Integrated_Date"].max())
         else:
-            print("Tidak ada data dalam AOI.")
+            print("Tidak ada hasil intersect.")
     else:
         print("Tidak ada data dari GFW.")
