@@ -4,7 +4,6 @@ import geopandas as gpd
 import gspread
 import json
 from shapely.geometry import shape, Point
-from shapely.ops import unary_union
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -150,7 +149,7 @@ def fetch_dist_alert(start_date, today):
 def fetch_all_gfw_data():
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
-    start_date = "2023-01-01"
+    start_date = "2026-01-01"
 
     print(f"\n{'='*60}")
     print(f"Fetching semua dataset GFW: {start_date} → {today}")
@@ -228,80 +227,11 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    print(f"\nIntersect selesai.")
-    print(f"Tanggal maksimum setelah intersect: {gdf['Integrated_Date'].max().date()}")
-    return gdf
+    # Hapus kolom geometry, tidak diperlukan di sheet
+    gdf = gdf.drop(columns=["geometry"], errors="ignore")
 
-
-def cluster_points_by_owner(gdf):
-    print("\nMelakukan clustering berdasarkan Owner, tanggal, dan Source...")
-    gdf = gdf.to_crs(epsg=32749)
-    cluster_results = []
-
-    for (owner, tanggal, source), group in gdf.groupby(["Owner", "Integrated_Date", "Source"]):
-        if pd.isna(owner) or group.empty:
-            continue
-
-        group = group.copy()
-        group["buffer"] = group.geometry.buffer(11)
-        union_poly = unary_union(group["buffer"])
-        if union_poly.is_empty:
-            continue
-
-        clusters    = [union_poly] if union_poly.geom_type == "Polygon" else list(union_poly.geoms)
-        tanggal_str = pd.to_datetime(tanggal).strftime("%Y-%m-%d")
-        src_short   = source.replace("-", "")
-
-        cluster_gdf = gpd.GeoDataFrame(geometry=clusters, crs=group.crs)
-        cluster_gdf["Cluster_ID"] = [
-            f"{owner}_{src_short}_{tanggal_str}_{str(i+1).zfill(3)}"
-            for i in range(len(cluster_gdf))
-        ]
-
-        centroid = cluster_gdf.geometry.centroid.to_crs(epsg=4326)
-        cluster_gdf["Cluster_Y"] = centroid.y.round(5)
-        cluster_gdf["Cluster_X"] = centroid.x.round(5)
-
-        joined = gpd.sjoin(group, cluster_gdf, how="left", predicate="intersects")
-        joined.drop(columns=["index_right"], inplace=True, errors="ignore")
-
-        count = joined.groupby("Cluster_ID").size().reset_index(name="Jumlah_Titik")
-        count["Luas_Ha"] = (count["Jumlah_Titik"] * 10 / 10000).round(4)
-
-        merged = joined.merge(count, on="Cluster_ID", how="left")
-        cluster_results.append(merged)
-
-    if not cluster_results:
-        return gdf.to_crs(4326)
-
-    final = pd.concat(cluster_results, ignore_index=True)
-    final = final.to_crs(4326)
-    final["Luas"] = 10
-
-    print(f"Clustering selesai ({len(final)} baris).")
-    print(f"Tanggal maksimum setelah clustering: {final['Integrated_Date'].max()}")
-    print("\nRingkasan cluster per Source:")
-    print(final.groupby("Source")["Cluster_ID"].nunique().to_string())
-    return final
-
-
-def add_desa_cluster_column(gdf, desa_path):
-    print("\nMenambahkan kolom Desa_Cluster...")
-    desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]].to_crs(epsg=4326)
-
-    cluster_points = gdf[["Cluster_ID", "Cluster_X", "Cluster_Y"]].drop_duplicates()
-    cluster_points = gpd.GeoDataFrame(
-        cluster_points,
-        geometry=gpd.points_from_xy(cluster_points["Cluster_X"], cluster_points["Cluster_Y"]),
-        crs="EPSG:4326"
-    )
-
-    joined = gpd.sjoin(cluster_points, desa, how="left", predicate="within")
-    joined.rename(columns={"nama_kel": "Desa_Cluster"}, inplace=True)
-    joined.drop(columns=["index_right"], inplace=True, errors="ignore")
-
-    gdf = gdf.merge(joined[["Cluster_ID", "Desa_Cluster"]], on="Cluster_ID", how="left")
-    print("Kolom Desa_Cluster berhasil ditambahkan.")
+    print(f"\nIntersect selesai: {len(gdf)} baris.")
+    print(f"Tanggal maksimum setelah intersect: {pd.to_datetime(gdf['Integrated_Date']).max().date()}")
     return gdf
 
 
@@ -316,9 +246,7 @@ def overwrite_google_sheet(df):
     keep_cols = [
         "latitude", "longitude", "Integrated_Date", "Integrated_Alert",
         "Source", "Alert_Type",
-        "Desa", "Owner", "Blok", "Cluster_ID",
-        "Cluster_Y", "Cluster_X", "Desa_Cluster",
-        "Jumlah_Titik", "Luas_Ha", "Luas"
+        "Desa", "Owner", "Blok"
     ]
     df = df[keep_cols].copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna("")
@@ -332,7 +260,7 @@ def overwrite_google_sheet(df):
         sheet.clear()
         print(f"\nSheet '{sheet_name}' ditemukan dan dikosongkan.")
     except gspread.exceptions.WorksheetNotFound:
-        sheet = sh.add_worksheet(title=sheet_name, rows=5000, cols=25)
+        sheet = sh.add_worksheet(title=sheet_name, rows=50000, cols=15)
         print(f"\nSheet '{sheet_name}' dibuat baru.")
 
     sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
@@ -370,7 +298,7 @@ def merge_sheets_to_db():
         db_sheet = sh.worksheet("Db")
         db_sheet.clear()
     except gspread.exceptions.WorksheetNotFound:
-        db_sheet = sh.add_worksheet(title="Db", rows=10000, cols=25)
+        db_sheet = sh.add_worksheet(title="Db", rows=100000, cols=15)
 
     db_sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
     print(f"Sheet 'Db' diperbarui: {len(df)} baris total.")
@@ -406,8 +334,6 @@ if __name__ == "__main__":
         if not df.empty:
             gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
             if not gdf.empty:
-                gdf = cluster_points_by_owner(gdf)
-                gdf = add_desa_cluster_column(gdf, DESA_PATH)
                 overwrite_google_sheet(gdf)
                 merge_sheets_to_db()
                 update_log(gdf["Integrated_Date"].max())
