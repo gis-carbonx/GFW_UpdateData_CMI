@@ -3,8 +3,7 @@ import pandas as pd
 import geopandas as gpd
 import gspread
 import json
-from shapely.geometry import shape, Point
-from shapely.ops import unary_union
+from shapely.geometry import shape
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -20,16 +19,15 @@ BLOK_PATH = "data/blok.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+PAGE_SIZE = 500   # baris per request, aman untuk semua dataset GFW
+
 
 def load_aoi_geometry(aoi_path):
-    """Baca aoi.json dan kembalikan (shapely_polygon, geojson_geometry_dict)."""
     with open(aoi_path, "r") as f:
         aoi_geojson = json.load(f)
-
-    feature = aoi_geojson["features"][0]
-    geom_dict = feature["geometry"]      
-    geom_shape = shape(geom_dict)          
-
+    feature    = aoi_geojson["features"][0]
+    geom_dict  = feature["geometry"]
+    geom_shape = shape(geom_dict)
     print(f"AOI dimuat: {aoi_path} | tipe: {geom_dict['type']}")
     return geom_shape, geom_dict
 
@@ -70,13 +68,54 @@ ALERT_DATASETS = [
 ]
 
 
+# ─── Fetch dengan pagination OFFSET ───────────────────────────────────────────
+def fetch_paginated(url, headers, base_sql, aoi_geom_dict, label, date_field, conf_field):
+    """
+    Fetch semua halaman dari satu dataset menggunakan LIMIT + OFFSET.
+    Berhenti ketika response mengembalikan 0 baris.
+    """
+    all_rows = []
+    offset   = 0
+    page     = 1
+
+    while True:
+        sql  = f"{base_sql} LIMIT {PAGE_SIZE} OFFSET {offset}"
+        body = {"geometry": aoi_geom_dict, "sql": sql}
+        resp = requests.post(url, headers=headers, json=body)
+
+        if resp.status_code != 200:
+            print(f"    [ERROR {resp.status_code}] halaman {page}: {resp.text[:200]}")
+            break
+
+        data = resp.json().get("data", [])
+        if not data:
+            break   # tidak ada data lagi → selesai
+
+        all_rows.extend(data)
+        print(f"    halaman {page}: {len(data)} baris (total: {len(all_rows)})")
+
+        if len(data) < PAGE_SIZE:
+            break   # halaman terakhir, tidak perlu lanjut
+
+        offset += PAGE_SIZE
+        page   += 1
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    df.rename(columns={date_field: "Integrated_Date", conf_field: "Integrated_Alert"}, inplace=True)
+    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
+    return df
+
+
 def fetch_single_dataset(cfg, start_date, today, aoi_geom_dict):
     dataset = cfg["dataset"]
     date_f  = cfg["date_field"]
     conf_f  = cfg["conf_field"]
     label   = cfg["source_label"]
 
-    sql = f"""
+    base_sql = f"""
     SELECT longitude, latitude, {date_f}, {conf_f}
     FROM results
     WHERE {date_f} >= '{start_date}'
@@ -85,33 +124,26 @@ def fetch_single_dataset(cfg, start_date, today, aoi_geom_dict):
 
     url     = f"https://data-api.globalforestwatch.org/dataset/{dataset}/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body    = {"geometry": aoi_geom_dict, "sql": sql}  
 
-    print(f"  → Fetching {label} ...")
-    resp = requests.post(url, headers=headers, json=body)
+    print(f"  → Fetching {label} (dengan pagination) ...")
+    df = fetch_paginated(url, headers, base_sql, aoi_geom_dict, label, date_f, conf_f)
 
-    if resp.status_code != 200:
-        print(f"    [ERROR {resp.status_code}] {label}: {resp.text[:200]}")
-        return pd.DataFrame()
-
-    data = resp.json().get("data", [])
-    if not data:
+    if df.empty:
         print(f"    [INFO] Tidak ada data untuk {label}.")
         return pd.DataFrame()
 
-    df = pd.DataFrame(data)
-    df.rename(columns={date_f: "Integrated_Date", conf_f: "Integrated_Alert"}, inplace=True)
-    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-    df["Source"]          = label
-    df["Alert_Type"]      = cfg["alert_type"]
-
-    print(f"    [OK] {len(df)} baris | terbaru: {df['Integrated_Date'].max().date()}")
+    df["Source"]     = label
+    df["Alert_Type"] = cfg["alert_type"]
+    print(f"    [OK] Total {len(df)} baris | terbaru: {df['Integrated_Date'].max().date()}")
     return df
 
 
 def fetch_dist_alert(start_date, today, aoi_geom_dict):
-    label = "DIST-ALERT"
-    sql = f"""
+    label  = "DIST-ALERT"
+    date_f = "umd_glad_landsat_alerts__date"
+    conf_f = "umd_glad_landsat_alerts__confidence"
+
+    base_sql = f"""
     SELECT longitude, latitude,
            umd_glad_landsat_alerts__date,
            umd_glad_landsat_alerts__confidence
@@ -122,38 +154,24 @@ def fetch_dist_alert(start_date, today, aoi_geom_dict):
 
     url     = "https://data-api.globalforestwatch.org/dataset/umd_glad_dist_alerts/latest/query"
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
-    body    = {"geometry": aoi_geom_dict, "sql": sql}  
 
-    print(f"  → Fetching {label} ...")
-    resp = requests.post(url, headers=headers, json=body)
+    print(f"  → Fetching {label} (dengan pagination) ...")
+    df = fetch_paginated(url, headers, base_sql, aoi_geom_dict, label, date_f, conf_f)
 
-    if resp.status_code != 200:
-        print(f"    [ERROR {resp.status_code}] {label}: {resp.text[:200]}")
-        return pd.DataFrame()
-
-    data = resp.json().get("data", [])
-    if not data:
+    if df.empty:
         print(f"    [INFO] Tidak ada data untuk {label}.")
         return pd.DataFrame()
 
-    df = pd.DataFrame(data)
-    df.rename(columns={
-        "umd_glad_landsat_alerts__date":       "Integrated_Date",
-        "umd_glad_landsat_alerts__confidence": "Integrated_Alert"
-    }, inplace=True)
-
-    df["Integrated_Date"] = pd.to_datetime(df["Integrated_Date"], errors="coerce")
-    df["Source"]          = label
-    df["Alert_Type"]      = "Disturbance"
-
-    print(f"    [OK] {len(df)} baris | terbaru: {df['Integrated_Date'].max().date()}")
+    df["Source"]     = label
+    df["Alert_Type"] = "Disturbance"
+    print(f"    [OK] Total {len(df)} baris | terbaru: {df['Integrated_Date'].max().date()}")
     return df
 
 
 def fetch_all_gfw_data(aoi_geom_dict):
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
-    start_date = "2025-01-01"
+    start_date = "2026-01-01"
 
     print(f"\n{'='*60}")
     print(f"Fetching semua dataset GFW: {start_date} → {today}")
@@ -303,7 +321,6 @@ def update_log(latest_date):
 
 
 if __name__ == "__main__":
-
     aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
 
     df = fetch_all_gfw_data(aoi_geom_dict)
