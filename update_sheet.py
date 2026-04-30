@@ -143,43 +143,6 @@ def overwrite_google_sheet(df):
     print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
 
-def merge_sheets_to_db():
-    creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
-    client = gspread.authorize(creds)
-    sh     = client.open_by_key(SPREADSHEET_ID)
-
-    sheets_to_merge = ["2023", "2024", "2025", "2026"]
-    all_data = []
-
-    print("\nMerge sheet ke Db:")
-    for name in sheets_to_merge:
-        try:
-            ws   = sh.worksheet(name)
-            rows = ws.get_all_records()
-            if rows:
-                all_data.extend(rows)
-                print(f"  ✔ {name}: {len(rows)} baris")
-        except gspread.exceptions.WorksheetNotFound:
-            print(f"  ⚠ Sheet {name} tidak ditemukan, dilewati.")
-
-    if not all_data:
-        print("Tidak ada data untuk digabungkan ke Db.")
-        return
-
-    df = pd.DataFrame(all_data)
-    df = df.replace([np.inf, -np.inf], np.nan).fillna("")
-    df = df.drop_duplicates().reset_index(drop=True)
-
-    try:
-        db_sheet = sh.worksheet("Db")
-        db_sheet.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        db_sheet = sh.add_worksheet(title="Db", rows=100000, cols=15)
-
-    db_sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
-    print(f"Sheet 'Db' diperbarui: {len(df)} baris total.")
-
-
 def update_log(latest_date):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -211,7 +174,6 @@ if __name__ == "__main__":
         gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
         if not gdf.empty:
             overwrite_google_sheet(gdf)
-            merge_sheets_to_db()
             update_log(gdf["Date"].max())
         else:
             print("Tidak ada hasil intersect.")
