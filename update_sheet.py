@@ -63,7 +63,8 @@ def fetch_gfw_data(aoi_geom_dict):
 
     today = datetime.now(wib).strftime("%Y-%m-%d")
 
-    start_date = "2026-01-01"
+    start_date = "2025-01-01"
+    end_date = "2025-12-31"
 
     sql = f"""
     SELECT
@@ -76,7 +77,7 @@ def fetch_gfw_data(aoi_geom_dict):
         wur_radd_alerts__confidence
     FROM results
     WHERE gfw_integrated_alerts__date >= '{start_date}'
-      AND gfw_integrated_alerts__date <= '{today}'
+      AND gfw_integrated_alerts__date <= '{end_date}'
     """
 
     url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
