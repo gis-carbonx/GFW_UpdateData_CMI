@@ -13,10 +13,10 @@ API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 LOG_SHEET_NAME = "Log_Update"
 
-AOI_PATH = "data/aoi.json"
+AOI_PATH = "data/aoi_v26.json"
 DESA_PATH = "data/Desa.json"
-PEMILIK_PATH = "data/PemilikLahan.json"
-BLOK_PATH = "data/blok.json"
+PEMILIK_PATH = "data/penggarap_v26.json"
+BLOK_PATH = "data/blok_v26.json"
 
 LULC_URL = "https://drive.google.com/uc?export=download&id=1uy1VJruyiwsZBcdv5YYRTI9EcAWZVB2O"
 LULC_PATH = "data/LULC.json"
