@@ -25,7 +25,7 @@ jobs:
       - name: Download LULC data from Google Drive
         run: |
           mkdir -p data
-          gdown --id 1xrwY3qCrFOkEopaTBZvwTZtMIVlzCB1N -O data/lulc.json
+          gdown "https://drive.google.com/uc?id=1xrwY3qCrFOkEopaTBZvwTZtMIVlzCB1N" -O data/lulc.json
 
       - name: Jalankan update script
         run: python update_sheet.py
