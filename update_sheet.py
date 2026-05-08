@@ -1,62 +1,35 @@
+# script dibawah ini fungsional, namun perlu perubahan untuk menambahkan irisan dengan data tutupan lahan
+
 import requests
 import pandas as pd
 import geopandas as gpd
 import gspread
 import json
-import io
-import os
-import tempfile
 from shapely.geometry import shape
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
 from datetime import datetime, timedelta, timezone
 import numpy as np
 
-API_KEY        = os.environ.get("GFW_API_KEY", "")
+API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 LOG_SHEET_NAME = "Log_Update"
 
-AOI_PATH       = "data/aoi_v26.json"
-DESA_PATH      = "data/Desa.json"
-PENGGARAP_PATH = "data/penggarap_v26.json"
-BLOK_PATH      = "data/blok_v26.json"
+AOI_PATH = "data/aoi.json"
+DESA_PATH = "data/Desa.json"
+PEMILIK_PATH = "data/PemilikLahan.json"
+BLOK_PATH = "data/blok.json"
 
-LULC_DRIVE_FILE_ID = "1v02RLW8-iDjfsXBjcv4ukaFwjKXYVPNl"
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def load_aoi_geometry(aoi_path):
     with open(aoi_path, "r") as f:
         aoi_geojson = json.load(f)
-    feature    = aoi_geojson["features"][0]
-    geom_dict  = feature["geometry"]
-    geom_shape = shape(geom_dict)
+    feature     = aoi_geojson["features"][0]
+    geom_dict   = feature["geometry"]
+    geom_shape  = shape(geom_dict)
     print(f"AOI dimuat: {aoi_path} | tipe: {geom_dict['type']}")
     return geom_shape, geom_dict
-
-
-def download_lulc_from_drive(file_id, dest_path):
-    creds = Credentials.from_service_account_file(
-        "service_account.json", scopes=SCOPES
-    )
-    drive_service = build("drive", "v3", credentials=creds)
-
-    request    = drive_service.files().get_media(fileId=file_id)
-    fh         = io.FileIO(dest_path, "wb")
-    downloader = MediaIoBaseDownload(fh, request)
-
-    print(f"Mengunduh LULC dari Google Drive (file_id={file_id}) ...")
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-        print(f"  Progress: {int(status.progress() * 100)}%")
-    fh.close()
-    print(f"LULC berhasil diunduh ke: {dest_path}")
 
 
 def fetch_gfw_data(aoi_geom_dict):
@@ -96,11 +69,11 @@ def fetch_gfw_data(aoi_geom_dict):
 
     df = pd.DataFrame(data)
     df.rename(columns={
-        "gfw_integrated_alerts__date":           "Date",
-        "gfw_integrated_alerts__confidence":     "Conf_Integrated",
-        "umd_glad_landsat_alerts__confidence":   "Conf_GLADL",
-        "umd_glad_sentinel2_alerts__confidence": "Conf_GLADS2",
-        "wur_radd_alerts__confidence":           "Conf_RADD",
+        "gfw_integrated_alerts__date":              "Date",
+        "gfw_integrated_alerts__confidence":        "Conf_Integrated",
+        "umd_glad_landsat_alerts__confidence":      "Conf_GLADL",
+        "umd_glad_sentinel2_alerts__confidence":    "Conf_GLADS2",
+        "wur_radd_alerts__confidence":              "Conf_RADD",
     }, inplace=True)
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -111,44 +84,34 @@ def fetch_gfw_data(aoi_geom_dict):
     return df
 
 
-def intersect_with_geojson(df, desa_path, penggarap_path, blok_path, lulc_path):
+def intersect_with_geojson(df, desa_path, pemilik_path, blok_path):
     gdf = gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df.longitude, df.latitude),
         crs="EPSG:4326"
     )
 
-    desa      = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
-    penggarap = gpd.read_file(penggarap_path)[["Owner", "geometry"]]
-    blok      = gpd.read_file(blok_path)[["Blok", "geometry"]]
-    lulc      = gpd.read_file(lulc_path)[["Class", "geometry"]]
+    desa    = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
+    pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
+    blok    = gpd.read_file(blok_path)[["Blok", "geometry"]]
 
-    for layer in [desa, penggarap, blok, lulc]:
+    for layer in [desa, pemilik, blok]:
         if layer.crs is None:
             layer.set_crs("EPSG:4326", inplace=True)
-        elif layer.crs.to_epsg() != 4326:
+        else:
             layer.to_crs("EPSG:4326", inplace=True)
 
-    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within")
-    gdf.rename(columns={"nama_kel": "Desa"}, inplace=True)
+    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").rename(columns={"nama_kel": "Desa"})
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-
-    gdf = gpd.sjoin(gdf, penggarap, how="left", predicate="within")
+    gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
-    gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-
-    gdf = gpd.sjoin(gdf, lulc, how="left", predicate="within")
-    gdf.rename(columns={"Class": "LULC"}, inplace=True)
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
 
     print(f"\nIntersect selesai: {len(gdf)} baris.")
-    print(f"Tanggal maksimum  : {pd.to_datetime(gdf['Date']).max().date()}")
-    print(f"\nRingkasan LULC:")
-    print(gdf["LULC"].value_counts().to_string())
+    print(f"Tanggal maksimum: {pd.to_datetime(gdf['Date']).max().date()}")
     return gdf
 
 
@@ -163,7 +126,7 @@ def overwrite_google_sheet(df):
     keep_cols = [
         "latitude", "longitude", "Date",
         "Conf_Integrated", "Conf_GLADL", "Conf_GLADS2", "Conf_RADD",
-        "Desa", "Owner", "Blok", "LULC"
+        "Desa", "Owner", "Blok"
     ]
     df = df[keep_cols].copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna("")
@@ -178,10 +141,7 @@ def overwrite_google_sheet(df):
         sheet = sh.add_worksheet(title=sheet_name, rows=50000, cols=15)
         print(f"\nSheet '{sheet_name}' dibuat baru.")
 
-    sheet.append_rows(
-        [list(df.columns)] + df.values.tolist(),
-        value_input_option="USER_ENTERED"
-    )
+    sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
     print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
 
@@ -208,27 +168,12 @@ def update_log(latest_date):
 
 
 if __name__ == "__main__":
-    # 1. Load AOI
     aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
 
-    # 2. Download LULC dari Google Drive
-    lulc_tmp = tempfile.NamedTemporaryFile(suffix=".geojson", delete=False).name
-    download_lulc_from_drive(LULC_DRIVE_FILE_ID, lulc_tmp)
-
-    # 3. Fetch GFW alert
     df = fetch_gfw_data(aoi_geom_dict)
 
     if not df.empty:
-        # 4. Spatial join semua layer
-        gdf = intersect_with_geojson(
-            df,
-            DESA_PATH,
-            PENGGARAP_PATH,
-            BLOK_PATH,
-            lulc_tmp
-        )
-
-        # 5. Tulis ke Google Sheets
+        gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH)
         if not gdf.empty:
             overwrite_google_sheet(gdf)
             update_log(gdf["Date"].max())
@@ -236,8 +181,3 @@ if __name__ == "__main__":
             print("Tidak ada hasil intersect.")
     else:
         print("Tidak ada data dari GFW.")
-
-    # 6. Hapus file LULC sementara
-    if os.path.exists(lulc_tmp):
-        os.remove(lulc_tmp)
-        print(f"\nFile sementara LULC dihapus: {lulc_tmp}")
