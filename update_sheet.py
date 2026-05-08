@@ -63,7 +63,7 @@ def fetch_gfw_data(aoi_geom_dict):
 
     today = datetime.now(wib).strftime("%Y-%m-%d")
 
-    start_date = "2023-01-01"
+    start_date = "2025-01-01"
 
     sql = f"""
     SELECT
