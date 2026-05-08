@@ -1,11 +1,14 @@
 name: Update Google Sheet GFW Alerts
+
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"  # Jalankan tiap 6 jam
   workflow_dispatch:   
+
 jobs:
   update-sheet:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -21,11 +24,6 @@ jobs:
       - name: Buat file kredensial dari secret JSON
         run: |
           echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
-
-      - name: Download LULC data from Google Drive
-        run: |
-          mkdir -p data
-          gdown "https://drive.google.com/uc?id=1xrwY3qCrFOkEopaTBZvwTZtMIVlzCB1N" -O data/tutupanlahan25.json
 
       - name: Jalankan update script
         run: python update_sheet.py
