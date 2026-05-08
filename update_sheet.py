@@ -193,7 +193,7 @@ def intersect_with_geojson(
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf.rename(columns={
-        "Class23": "Penutup_Lahan"
+        "Class": "Penutup_Lahan"
     }, inplace=True)
 
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
