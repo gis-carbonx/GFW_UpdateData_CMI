@@ -37,6 +37,11 @@ def load_lulc_from_gdrive(file_id):
     if resp.status_code != 200:
         raise ConnectionError(f"Gagal mengunduh LULC: HTTP {resp.status_code}")
     geojson_data = resp.json()
+
+    valid_features = [f for f in geojson_data["features"] if f.get("geometry") is not None]
+    if not valid_features:
+        raise ValueError("Semua fitur LULC memiliki geometry null.")
+    
     lulc = gpd.GeoDataFrame.from_features(geojson_data["features"], crs="EPSG:4326")
     if "Class" not in lulc.columns:
         raise ValueError(f"Kolom 'Class' tidak ditemukan. Kolom tersedia: {list(lulc.columns)}")
