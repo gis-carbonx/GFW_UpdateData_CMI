@@ -16,7 +16,7 @@ SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 LOG_SHEET_NAME = "Log_Update"
 
 START_DATE = "2023-01-01"
-END_DATE   = "2026-12-31"
+END_DATE   = "2023-12-31"
 
 AOI_PATH = "data/aoi_v26.json"
 
