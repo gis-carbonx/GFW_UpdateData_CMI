@@ -3,22 +3,42 @@ import pandas as pd
 import geopandas as gpd
 import gspread
 import json
+import os
+import gdown
 from shapely.geometry import shape
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
 import numpy as np
 
-API_KEY          = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
-SPREADSHEET_ID   = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
-LOG_SHEET_NAME   = "Log_Update"
+API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
+SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
+LOG_SHEET_NAME = "Log_Update"
 
-AOI_PATH     = "data/aoi.json"
-DESA_PATH    = "data/Desa.json"
+AOI_PATH    = "data/aoi.json"
+DESA_PATH   = "data/Desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
-BLOK_PATH    = "data/blok.json"
-LULC_PATH    = "data/tutupanlahan25.json" 
+BLOK_PATH   = "data/blok.json"
+LULC_PATH   = "data/tutupanlahan25.json" 
+
+LULC_GDRIVE_ID  = "1xrwY3qCrFOkEopaTBZvwTZtMIVlzCB1N" 
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+def download_lulc_from_gdrive(gdrive_id: str, output_path: str):
+    """
+    Download file dari Google Drive menggunakan gdown.
+    Skip download jika file sudah ada di lokal (hemat waktu & bandwidth).
+    Untuk memaksa re-download, hapus file lokal terlebih dahulu.
+    """
+    if os.path.exists(output_path):
+        print(f"[LULC] File sudah ada di '{output_path}', skip download.")
+        return
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    url = f"https://drive.google.com/uc?id={gdrive_id}"
+    print(f"[LULC] Mengunduh tutupanlahan25.json dari Google Drive ...")
+    gdown.download(url, output_path, quiet=False)
+    print(f"[LULC] Download selesai → '{output_path}'")
 
 def load_aoi_geometry(aoi_path):
     with open(aoi_path, "r") as f:
@@ -81,16 +101,20 @@ def fetch_gfw_data(aoi_geom_dict):
     return df
 
 def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_path):
+    """
+    Semua sjoin menggunakan how='left' agar SELURUH titik GFW tetap ada.
+    Titik yang tidak beririsan layer manapun akan diisi 'Outside Project Area'.
+    """
     gdf = gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df.longitude, df.latitude),
         crs="EPSG:4326"
     )
-
+    
     desa    = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
     pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
     blok    = gpd.read_file(blok_path)[["Blok", "geometry"]]
-    lulc    = gpd.read_file(lulc_path)[["Class", "geometry"]]
+    lulc    = gpd.read_file(lulc_path)[["Class", "geometry"]] 
 
     for layer in [desa, pemilik, blok, lulc]:
         if layer.crs is None:
@@ -98,25 +122,30 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_path):
         else:
             layer.to_crs("EPSG:4326", inplace=True)
 
-    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within").rename(columns={"nama_kel": "Desa"})
+    gdf = gpd.sjoin(gdf, desa,    how="left", predicate="within")
+    gdf.rename(columns={"nama_kel": "Desa"}, inplace=True)
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf = gpd.sjoin(gdf, pemilik, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
+    gdf = gpd.sjoin(gdf, blok,    how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    gdf = gpd.sjoin(gdf, lulc, how="left", predicate="within")
+    gdf = gpd.sjoin(gdf, lulc,    how="left", predicate="within")
+    gdf.rename(columns={"Class": "LULC"}, inplace=True)
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-    gdf["Class"] = gdf["Class"].fillna("Outside Project Area")
+
+    for col in ["Desa", "Owner", "Blok", "LULC"]:
+        if col in gdf.columns:
+            gdf[col] = gdf[col].fillna("Outside Project Area")
 
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
 
     print(f"\nIntersect selesai: {len(gdf)} baris.")
-    print(f"Tanggal maksimum : {pd.to_datetime(gdf['Date']).max().date()}")
-    print("\nRingkasan LULC:")
-    print(gdf["Class"].value_counts().to_string())
+    print(f"Tanggal maksimum  : {pd.to_datetime(gdf['Date']).max().date()}")
+    print(f"\nRingkasan LULC:")
+    print(gdf["LULC"].value_counts().to_string())
     return gdf
 
 def overwrite_google_sheet(df):
@@ -130,7 +159,7 @@ def overwrite_google_sheet(df):
     keep_cols = [
         "latitude", "longitude", "Date",
         "Conf_Integrated", "Conf_GLADL", "Conf_GLADS2", "Conf_RADD",
-        "Desa", "Owner", "Blok", "Class"
+        "Desa", "Owner", "Blok", "LULC"  
     ]
     df = df[keep_cols].copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna("")
@@ -145,7 +174,10 @@ def overwrite_google_sheet(df):
         sheet = sh.add_worksheet(title=sheet_name, rows=50000, cols=15)
         print(f"\nSheet '{sheet_name}' dibuat baru.")
 
-    sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
+    sheet.append_rows(
+        [list(df.columns)] + df.values.tolist(),
+        value_input_option="USER_ENTERED"
+    )
     print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
 def update_log(latest_date):
@@ -170,6 +202,9 @@ def update_log(latest_date):
     print(f"\nLog diperbarui: {now_wib} | Latest alert: {latest_date}")
 
 if __name__ == "__main__":
+
+    download_lulc_from_gdrive(LULC_GDRIVE_ID, LULC_PATH)
+
     aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
 
     df = fetch_gfw_data(aoi_geom_dict)
