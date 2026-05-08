@@ -17,10 +17,10 @@ API_KEY        = os.environ.get("GFW_API_KEY", "")
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 LOG_SHEET_NAME = "Log_Update"
 
-AOI_PATH       = "Data/aoi_v26.json"
-DESA_PATH      = "Data/Desa.json"
-PENGGARAP_PATH = "Data/penggarap_v26.json"
-BLOK_PATH      = "Data/blok_v26.json"
+AOI_PATH       = "data/aoi_v26.json"
+DESA_PATH      = "data/Desa.json"
+PENGGARAP_PATH = "data/penggarap_v26.json"
+BLOK_PATH      = "data/blok_v26.json"
 
 LULC_DRIVE_FILE_ID = "1v02RLW8-iDjfsXBjcv4ukaFwjKXYVPNl"
 
