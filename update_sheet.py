@@ -16,7 +16,7 @@ AOI_PATH     = "data/aoi.json"
 DESA_PATH    = "data/Desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH    = "data/blok.json"
-LULC_PATH    = "data/lulc.json" 
+LULC_PATH    = "data/tutupanlahan25.json" 
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
