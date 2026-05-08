@@ -18,8 +18,8 @@ DESA_PATH = "data/Desa.json"
 PEMILIK_PATH = "data/penggarap_v26.json"
 BLOK_PATH = "data/blok_v26.json"
 
-LULC_URL = "https://drive.google.com/uc?export=download&id=1uy1VJruyiwsZBcdv5YYRTI9EcAWZVB2O"
-LULC_PATH = "data/LULC.json"
+LULC_URL = "https://drive.google.com/uc?export=download&id=1v02RLW8-iDjfsXBjcv4ukaFwjKXYVPNl"
+LULC_PATH = "data/lulc_v26.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -144,7 +144,7 @@ def intersect_with_geojson(
 
     download_lulc_if_needed()
 
-    lulc = gpd.read_file(LULC_PATH)[["Class23", "geometry"]]
+    lulc = gpd.read_file(LULC_PATH)[["Class", "geometry"]]
 
     layers = [desa, pemilik, blok, lulc]
 
