@@ -17,7 +17,6 @@ AOI_PATH = "data/aoi_v26.json"
 DESA_PATH = "data/Desa.json"
 PEMILIK_PATH = "data/penggarap_v26.json"
 BLOK_PATH = "data/blok_v26.json"
-RKT_PATH = "data/rkt.json"
 
 LULC_URL = "https://drive.google.com/uc?export=download&id=1v02RLW8-iDjfsXBjcv4ukaFwjKXYVPNl"
 LULC_PATH = "data/lulc_v26.json"
@@ -26,14 +25,11 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def load_aoi_geometry(aoi_path):
-
     with open(aoi_path, "r") as f:
         aoi_geojson = json.load(f)
 
     feature = aoi_geojson["features"][0]
-
     geom_dict = feature["geometry"]
-
     geom_shape = shape(geom_dict)
 
     print(f"AOI dimuat: {aoi_path} | tipe: {geom_dict['type']}")
@@ -42,22 +38,18 @@ def load_aoi_geometry(aoi_path):
 
 
 def download_lulc_if_needed():
-
     os.makedirs("data", exist_ok=True)
 
     if not os.path.exists(LULC_PATH):
-
         print("Downloading LULC data dari Google Drive...")
 
         r = requests.get(LULC_URL)
 
         if r.status_code == 200:
-
             with open(LULC_PATH, "wb") as f:
                 f.write(r.content)
 
             print("LULC berhasil didownload.")
-
         else:
             raise Exception(f"Gagal download LULC. Status code: {r.status_code}")
 
@@ -71,8 +63,7 @@ def fetch_gfw_data(aoi_geom_dict):
 
     today = datetime.now(wib).strftime("%Y-%m-%d")
 
-    start_date = "2024-01-01"
-    end_date = "2025-12-31"
+    start_date = "2026-01-01"
 
     sql = f"""
     SELECT
@@ -85,7 +76,7 @@ def fetch_gfw_data(aoi_geom_dict):
         wur_radd_alerts__confidence
     FROM results
     WHERE gfw_integrated_alerts__date >= '{start_date}'
-      AND gfw_integrated_alerts__date <= '{end_date}'
+      AND gfw_integrated_alerts__date <= '{today}'
     """
 
     url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
@@ -105,17 +96,13 @@ def fetch_gfw_data(aoi_geom_dict):
     resp = requests.post(url, headers=headers, json=body)
 
     if resp.status_code != 200:
-
         print(f"[ERROR {resp.status_code}]: {resp.text[:300]}")
-
         return pd.DataFrame()
 
     data = resp.json().get("data", [])
 
     if not data:
-
         print("Tidak ada data dari GFW.")
-
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
@@ -142,8 +129,7 @@ def intersect_with_geojson(
     df,
     desa_path,
     pemilik_path,
-    blok_path,
-    rkt_path
+    blok_path
 ):
 
     gdf = gpd.GeoDataFrame(
@@ -153,18 +139,14 @@ def intersect_with_geojson(
     )
 
     desa = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
-
     pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
-
     blok = gpd.read_file(blok_path)[["Blok", "geometry"]]
-
-    rkt = gpd.read_file(rkt_path)[["PETAKKERJA", "geometry"]]
 
     download_lulc_if_needed()
 
     lulc = gpd.read_file(LULC_PATH)[["Class", "geometry"]]
 
-    layers = [desa, pemilik, blok, rkt, lulc]
+    layers = [desa, pemilik, blok, lulc]
 
     for layer in layers:
 
@@ -174,7 +156,6 @@ def intersect_with_geojson(
         else:
             layer.to_crs("EPSG:4326", inplace=True)
 
-    # DESA
     gdf = gpd.sjoin(
         gdf,
         desa,
@@ -184,7 +165,6 @@ def intersect_with_geojson(
 
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    # OWNER
     gdf = gpd.sjoin(
         gdf,
         pemilik,
@@ -194,7 +174,6 @@ def intersect_with_geojson(
 
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    # BLOK
     gdf = gpd.sjoin(
         gdf,
         blok,
@@ -204,17 +183,6 @@ def intersect_with_geojson(
 
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    # RKT
-    gdf = gpd.sjoin(
-        gdf,
-        rkt,
-        how="left",
-        predicate="within"
-    )
-
-    gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-
-    # LULC
     gdf = gpd.sjoin(
         gdf,
         lulc,
@@ -225,8 +193,7 @@ def intersect_with_geojson(
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf.rename(columns={
-        "Class": "Penutup_Lahan",
-        "PETAKKERJA": "no_rkt"
+        "Class": "Penutup_Lahan"
     }, inplace=True)
 
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
@@ -267,7 +234,6 @@ def overwrite_google_sheet(df):
         "Desa",
         "Owner",
         "Blok",
-        "no_rkt",
         "Penutup_Lahan"
     ]
 
@@ -283,7 +249,6 @@ def overwrite_google_sheet(df):
     df = df.astype(str)
 
     try:
-
         sheet = sh.worksheet(sheet_name)
 
         sheet.clear()
@@ -295,7 +260,7 @@ def overwrite_google_sheet(df):
         sheet = sh.add_worksheet(
             title=sheet_name,
             rows=50000,
-            cols=25
+            cols=20
         )
 
         print(f"\nSheet '{sheet_name}' dibuat baru.")
@@ -318,7 +283,6 @@ def update_log(latest_date):
     client = gspread.authorize(creds)
 
     try:
-
         log_sheet = client.open_by_key(
             SPREADSHEET_ID
         ).worksheet(LOG_SHEET_NAME)
@@ -359,8 +323,7 @@ if __name__ == "__main__":
             df,
             DESA_PATH,
             PEMILIK_PATH,
-            BLOK_PATH,
-            RKT_PATH
+            BLOK_PATH
         )
 
         if not gdf.empty:
