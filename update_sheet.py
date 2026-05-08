@@ -16,11 +16,9 @@ AOI_PATH     = "data/aoi.json"
 DESA_PATH    = "data/Desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH    = "data/blok.json"
-
-LULC_GDRIVE_FILE_ID = "1uy1VJruyiwsZBcdv5YYRTI9EcAWZVB2O"
+LULC_PATH    = "data/lulc.json" 
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-
 
 def load_aoi_geometry(aoi_path):
     with open(aoi_path, "r") as f:
@@ -28,39 +26,8 @@ def load_aoi_geometry(aoi_path):
     feature    = aoi_geojson["features"][0]
     geom_dict  = feature["geometry"]
     geom_shape = shape(geom_dict)
+    print(f"AOI dimuat: {aoi_path} | tipe: {geom_dict['type']}")
     return geom_shape, geom_dict
-
-
-def load_lulc_from_gdrive(file_id):
-    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    resp = requests.get(download_url)
-    if resp.status_code != 200:
-        raise ConnectionError(f"Gagal mengunduh LULC: HTTP {resp.status_code}")
-    geojson_data = resp.json()
-
-    def is_valid_geometry(geom):
-        if geom is None:
-            return False
-        if not isinstance(geom, dict):
-            return False
-        if not geom.get("type"):
-            return False
-        if not geom.get("coordinates"):
-            return False
-        return True
-
-    valid_features = [
-        f for f in geojson_data["features"]
-        if is_valid_geometry(f.get("geometry"))
-    ]
-    if not valid_features:
-        raise ValueError("Semua fitur LULC memiliki geometry tidak valid.")
-
-    lulc = gpd.GeoDataFrame.from_features(valid_features, crs="EPSG:4326")
-    if "Class" not in lulc.columns:
-        raise ValueError(f"Kolom 'Class' tidak ditemukan. Kolom tersedia: {list(lulc.columns)}")
-    return lulc[["Class", "geometry"]]
-
 
 def fetch_gfw_data(aoi_geom_dict):
     wib        = timezone(timedelta(hours=7))
@@ -85,12 +52,16 @@ def fetch_gfw_data(aoi_geom_dict):
     headers = {"x-api-key": API_KEY, "Content-Type": "application/json"}
     body    = {"geometry": aoi_geom_dict, "sql": sql}
 
+    print(f"\nFetching integrated alerts: {start_date} → {today} ...")
     resp = requests.post(url, headers=headers, json=body)
+
     if resp.status_code != 200:
+        print(f"[ERROR {resp.status_code}]: {resp.text[:300]}")
         return pd.DataFrame()
 
     data = resp.json().get("data", [])
     if not data:
+        print("Tidak ada data dari GFW.")
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
@@ -103,10 +74,13 @@ def fetch_gfw_data(aoi_geom_dict):
     }, inplace=True)
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    print(f"[OK] {len(df)} baris | terbaru: {df['Date'].max().date()}")
+    print("\nRingkasan confidence integrated:")
+    print(df["Conf_Integrated"].value_counts().to_string())
     return df
 
-
-def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_gdf):
+def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_path):
     gdf = gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df.longitude, df.latitude),
@@ -116,8 +90,9 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_gdf):
     desa    = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
     pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
     blok    = gpd.read_file(blok_path)[["Blok", "geometry"]]
+    lulc    = gpd.read_file(lulc_path)[["Class", "geometry"]]
 
-    for layer in [desa, pemilik, blok, lulc_gdf]:
+    for layer in [desa, pemilik, blok, lulc]:
         if layer.crs is None:
             layer.set_crs("EPSG:4326", inplace=True)
         else:
@@ -132,13 +107,17 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_gdf):
     gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    gdf = gpd.sjoin(gdf, lulc_gdf, how="left", predicate="within")
+    gdf = gpd.sjoin(gdf, lulc, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
+    gdf["Class"] = gdf["Class"].fillna("Outside Project Area") 
 
-    gdf["Class"] = gdf["Class"].fillna("Outside Project Area")
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
-    return gdf
 
+    print(f"\nIntersect selesai: {len(gdf)} baris.")
+    print(f"Tanggal maksimum : {pd.to_datetime(gdf['Date']).max().date()}")
+    print("\nRingkasan LULC:")
+    print(gdf["Class"].value_counts().to_string())
+    return gdf
 
 def overwrite_google_sheet(df):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
@@ -151,7 +130,7 @@ def overwrite_google_sheet(df):
     keep_cols = [
         "latitude", "longitude", "Date",
         "Conf_Integrated", "Conf_GLADL", "Conf_GLADS2", "Conf_RADD",
-        "Desa", "Owner", "Blok", "Class"
+        "Desa", "Owner", "Blok", "Class"      # <-- tambahan kolom Class
     ]
     df = df[keep_cols].copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna("")
@@ -161,11 +140,13 @@ def overwrite_google_sheet(df):
     try:
         sheet = sh.worksheet(sheet_name)
         sheet.clear()
+        print(f"\nSheet '{sheet_name}' ditemukan dan dikosongkan.")
     except gspread.exceptions.WorksheetNotFound:
         sheet = sh.add_worksheet(title=sheet_name, rows=50000, cols=15)
+        print(f"\nSheet '{sheet_name}' dibuat baru.")
 
     sheet.append_rows([list(df.columns)] + df.values.tolist(), value_input_option="USER_ENTERED")
-
+    print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
 def update_log(latest_date):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
@@ -186,16 +167,19 @@ def update_log(latest_date):
         ["Note", "Last Update", "Latest Alert Date"],
         ["Update", now_wib, str(latest_date)]
     ], value_input_option="USER_ENTERED")
-
+    print(f"\nLog diperbarui: {now_wib} | Latest alert: {latest_date}")
 
 if __name__ == "__main__":
     aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
-    lulc_gdf = load_lulc_from_gdrive(LULC_GDRIVE_FILE_ID)
 
     df = fetch_gfw_data(aoi_geom_dict)
 
     if not df.empty:
-        gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH, lulc_gdf)
+        gdf = intersect_with_geojson(df, DESA_PATH, PEMILIK_PATH, BLOK_PATH, LULC_PATH)
         if not gdf.empty:
             overwrite_google_sheet(gdf)
             update_log(gdf["Date"].max())
+        else:
+            print("Tidak ada hasil intersect.")
+    else:
+        print("Tidak ada data dari GFW.")
