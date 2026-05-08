@@ -25,8 +25,8 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 def load_aoi_geometry(aoi_path):
     with open(aoi_path, "r") as f:
         aoi_geojson = json.load(f)
-    feature   = aoi_geojson["features"][0]
-    geom_dict = feature["geometry"]
+    feature    = aoi_geojson["features"][0]
+    geom_dict  = feature["geometry"]
     geom_shape = shape(geom_dict)
     return geom_shape, geom_dict
 
@@ -38,9 +38,23 @@ def load_lulc_from_gdrive(file_id):
         raise ConnectionError(f"Gagal mengunduh LULC: HTTP {resp.status_code}")
     geojson_data = resp.json()
 
-    valid_features = [f for f in geojson_data["features"] if f.get("geometry") is not None]
+    def is_valid_geometry(geom):
+        if geom is None:
+            return False
+        if not isinstance(geom, dict):
+            return False
+        if not geom.get("type"):
+            return False
+        if not geom.get("coordinates"):
+            return False
+        return True
+
+    valid_features = [
+        f for f in geojson_data["features"]
+        if is_valid_geometry(f.get("geometry"))
+    ]
     if not valid_features:
-        raise ValueError("Semua fitur LULC memiliki geometry null.")
+        raise ValueError("Semua fitur LULC memiliki geometry tidak valid.")
 
     lulc = gpd.GeoDataFrame.from_features(valid_features, crs="EPSG:4326")
     if "Class" not in lulc.columns:
