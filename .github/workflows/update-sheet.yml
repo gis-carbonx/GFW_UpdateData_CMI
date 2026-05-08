@@ -2,8 +2,8 @@ name: Update Google Sheet GFW Alerts
 
 on:
   schedule:
-    - cron: "0 */6 * * *"  # Tiap 6 jam
-  workflow_dispatch:
+    - cron: "0 */6 * * *"  # Jalankan tiap 6 jam
+  workflow_dispatch:   
 
 jobs:
   update-sheet:
@@ -22,9 +22,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Buat file kredensial dari secret JSON
-        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
 
       - name: Jalankan update script
-        env:
-          GFW_API_KEY: ${{ secrets.GFW_API_KEY }}
         run: python update_sheet.py
