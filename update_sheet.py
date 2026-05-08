@@ -13,14 +13,14 @@ from googleapiclient.http import MediaIoBaseDownload
 from datetime import datetime, timedelta, timezone
 import numpy as np
 
-API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
+API_KEY        = os.environ.get("GFW_API_KEY", "")
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 LOG_SHEET_NAME = "Log_Update"
 
-AOI_PATH        = "Data/aoi_v26.json"
-DESA_PATH       = "Data/Desa.json"
-PENGGARAP_PATH  = "Data/penggarap_v26.json"
-BLOK_PATH       = "Data/blok_v26.json"
+AOI_PATH       = "Data/aoi_v26.json"
+DESA_PATH      = "Data/Desa.json"
+PENGGARAP_PATH = "Data/penggarap_v26.json"
+BLOK_PATH      = "Data/blok_v26.json"
 
 LULC_DRIVE_FILE_ID = "1v02RLW8-iDjfsXBjcv4ukaFwjKXYVPNl"
 
@@ -30,9 +30,6 @@ SCOPES = [
 ]
 
 
-# ─────────────────────────────────────────────
-# 1. AOI
-# ─────────────────────────────────────────────
 def load_aoi_geometry(aoi_path):
     with open(aoi_path, "r") as f:
         aoi_geojson = json.load(f)
@@ -43,21 +40,14 @@ def load_aoi_geometry(aoi_path):
     return geom_shape, geom_dict
 
 
-# ─────────────────────────────────────────────
-# 2. Download LULC dari Google Drive
-# ─────────────────────────────────────────────
 def download_lulc_from_drive(file_id, dest_path):
-    """
-    Download file GeoJSON/GeoPackage dari Google Drive menggunakan
-    service_account.json. File disimpan sementara ke dest_path.
-    """
     creds = Credentials.from_service_account_file(
         "service_account.json", scopes=SCOPES
     )
     drive_service = build("drive", "v3", credentials=creds)
 
-    request = drive_service.files().get_media(fileId=file_id)
-    fh      = io.FileIO(dest_path, "wb")
+    request    = drive_service.files().get_media(fileId=file_id)
+    fh         = io.FileIO(dest_path, "wb")
     downloader = MediaIoBaseDownload(fh, request)
 
     print(f"Mengunduh LULC dari Google Drive (file_id={file_id}) ...")
@@ -69,9 +59,6 @@ def download_lulc_from_drive(file_id, dest_path):
     print(f"LULC berhasil diunduh ke: {dest_path}")
 
 
-# ─────────────────────────────────────────────
-# 3. Fetch GFW
-# ─────────────────────────────────────────────
 def fetch_gfw_data(aoi_geom_dict):
     wib        = timezone(timedelta(hours=7))
     today      = datetime.now(wib).strftime("%Y-%m-%d")
@@ -124,9 +111,6 @@ def fetch_gfw_data(aoi_geom_dict):
     return df
 
 
-# ─────────────────────────────────────────────
-# 4. Spatial Join semua layer + LULC
-# ─────────────────────────────────────────────
 def intersect_with_geojson(df, desa_path, penggarap_path, blok_path, lulc_path):
     gdf = gpd.GeoDataFrame(
         df,
@@ -134,39 +118,28 @@ def intersect_with_geojson(df, desa_path, penggarap_path, blok_path, lulc_path):
         crs="EPSG:4326"
     )
 
-    # ── Load layer vektor ──────────────────────────────────────────
-    desa     = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
+    desa      = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
     penggarap = gpd.read_file(penggarap_path)[["Owner", "geometry"]]
-    blok     = gpd.read_file(blok_path)[["Blok", "geometry"]]
+    blok      = gpd.read_file(blok_path)[["Blok", "geometry"]]
+    lulc      = gpd.read_file(lulc_path)[["Class", "geometry"]]
 
-    # ── Load LULC (bisa GeoJSON, GeoPackage, atau Shapefile) ──────
-    # Deteksi ekstensi untuk menentukan cara baca
-    lulc_ext = os.path.splitext(lulc_path)[-1].lower()
-    if lulc_ext in [".gpkg", ".geojson", ".json", ".shp"]:
-        lulc = gpd.read_file(lulc_path)[["Class", "geometry"]]
-    else:
-        # Fallback: coba baca langsung
-        lulc = gpd.read_file(lulc_path)[["Class", "geometry"]]
-
-    # ── Seragamkan CRS ke EPSG:4326 ───────────────────────────────
     for layer in [desa, penggarap, blok, lulc]:
         if layer.crs is None:
             layer.set_crs("EPSG:4326", inplace=True)
         elif layer.crs.to_epsg() != 4326:
             layer.to_crs("EPSG:4326", inplace=True)
 
-    # ── Spatial join berurutan ─────────────────────────────────────
-    gdf = gpd.sjoin(gdf, desa,      how="left", predicate="within")
+    gdf = gpd.sjoin(gdf, desa, how="left", predicate="within")
     gdf.rename(columns={"nama_kel": "Desa"}, inplace=True)
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
     gdf = gpd.sjoin(gdf, penggarap, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    gdf = gpd.sjoin(gdf, blok,      how="left", predicate="within")
+    gdf = gpd.sjoin(gdf, blok, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
-    gdf = gpd.sjoin(gdf, lulc,      how="left", predicate="within")
+    gdf = gpd.sjoin(gdf, lulc, how="left", predicate="within")
     gdf.rename(columns={"Class": "LULC"}, inplace=True)
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
 
@@ -179,9 +152,6 @@ def intersect_with_geojson(df, desa_path, penggarap_path, blok_path, lulc_path):
     return gdf
 
 
-# ─────────────────────────────────────────────
-# 5. Tulis ke Google Sheets
-# ─────────────────────────────────────────────
 def overwrite_google_sheet(df):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -215,9 +185,6 @@ def overwrite_google_sheet(df):
     print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
 
-# ─────────────────────────────────────────────
-# 6. Update log
-# ─────────────────────────────────────────────
 def update_log(latest_date):
     creds  = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -240,19 +207,12 @@ def update_log(latest_date):
     print(f"\nLog diperbarui: {now_wib} | Latest alert: {latest_date}")
 
 
-# ─────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
     # 1. Load AOI
     aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
 
-    # 2. Download LULC dari Google Drive ke file sementara
-    #    Ekstensi disesuaikan dengan format file di Drive Anda
-    #    (ganti .geojson jika format lain, misal .gpkg)
-    lulc_tmp = tempfile.NamedTemporaryFile(
-        suffix=".geojson", delete=False
-    ).name
+    # 2. Download LULC dari Google Drive
+    lulc_tmp = tempfile.NamedTemporaryFile(suffix=".geojson", delete=False).name
     download_lulc_from_drive(LULC_DRIVE_FILE_ID, lulc_tmp)
 
     # 3. Fetch GFW alert
@@ -268,7 +228,7 @@ if __name__ == "__main__":
             lulc_tmp
         )
 
-        # 5. Tulis hasil ke Google Sheets
+        # 5. Tulis ke Google Sheets
         if not gdf.empty:
             overwrite_google_sheet(gdf)
             update_log(gdf["Date"].max())
