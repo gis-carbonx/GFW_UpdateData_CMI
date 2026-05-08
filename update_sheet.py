@@ -16,7 +16,7 @@ AOI_PATH     = "data/aoi.json"
 DESA_PATH    = "data/Desa.json"
 PEMILIK_PATH = "data/PemilikLahan.json"
 BLOK_PATH    = "data/blok.json"
-LULC_PATH    = "data/lulc.json" 
+LULC_PATH    = "data/lulc.json"     
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -90,8 +90,7 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_path):
     desa    = gpd.read_file(desa_path)[["nama_kel", "geometry"]]
     pemilik = gpd.read_file(pemilik_path)[["Owner", "geometry"]]
     blok    = gpd.read_file(blok_path)[["Blok", "geometry"]]
-    lulc    = gpd.read_file(lulc_path)[["Class", "geometry"]]
-
+    lulc    = gpd.read_file(lulc_path)[["Class", "geometry"]]   
     for layer in [desa, pemilik, blok, lulc]:
         if layer.crs is None:
             layer.set_crs("EPSG:4326", inplace=True)
@@ -109,8 +108,7 @@ def intersect_with_geojson(df, desa_path, pemilik_path, blok_path, lulc_path):
 
     gdf = gpd.sjoin(gdf, lulc, how="left", predicate="within")
     gdf.drop(columns=["index_right"], inplace=True, errors="ignore")
-    gdf["Class"] = gdf["Class"].fillna("Outside Project Area") 
-
+    gdf["Class"] = gdf["Class"].fillna("Outside Project Area")  
     gdf = gdf.drop(columns=["geometry"], errors="ignore")
 
     print(f"\nIntersect selesai: {len(gdf)} baris.")
@@ -130,7 +128,7 @@ def overwrite_google_sheet(df):
     keep_cols = [
         "latitude", "longitude", "Date",
         "Conf_Integrated", "Conf_GLADL", "Conf_GLADS2", "Conf_RADD",
-        "Desa", "Owner", "Blok", "Class"      # <-- tambahan kolom Class
+        "Desa", "Owner", "Blok", "Class"
     ]
     df = df[keep_cols].copy()
     df = df.replace([np.inf, -np.inf], np.nan).fillna("")
