@@ -2,7 +2,7 @@ name: Update Google Sheet GFW Alerts
 
 on:
   schedule:
-    - cron: "0 */6 * * *"  # Jalankan tiap 6 jam
+    - cron: "0 * * * *" # Jalankan tiap jam
   workflow_dispatch:   
 
 jobs:
