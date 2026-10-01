@@ -9,7 +9,7 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
 import numpy as np
 
-API_KEY = "912b99d5-ecc2-47aa-86fe-1f986b9b070b"
+API_KEY = "0f883c77-4038-4107-b35a-5be8e736fe5a"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 LOG_SHEET_NAME = "Log_Update"
 
