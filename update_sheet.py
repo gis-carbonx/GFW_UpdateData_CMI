@@ -13,6 +13,13 @@ API_KEY = "0f883c77-4038-4107-b35a-5be8e736fe5a"
 SPREADSHEET_ID = "1UW3uOFcLr4AQFBp_VMbEXk37_Vb5DekHU-_9QSkskCo"
 LOG_SHEET_NAME = "Log_Update"
 
+# Dataset GFW yang di-query.
+#   "gfw_integrated_dist_alerts" = Global integrated disturbance alerts
+#       (GLAD-L + GLAD-S2 + RADD + DIST-ALERT) -> sama dengan layer di website
+#   "gfw_integrated_alerts"      = Integrated deforestation alerts (koleksi lama,
+#       GLAD-L + GLAD-S2 + RADD saja)
+GFW_DATASET = "gfw_integrated_dist_alerts"
+
 AOI_PATH = "data/aoi_v26.json"
 DESA_PATH = "data/Desa.json"
 PEMILIK_PATH = "data/penggarap_v26.json"
@@ -65,21 +72,24 @@ def fetch_gfw_data(aoi_geom_dict):
 
     start_date = "2025-01-01"
 
+    date_field = f"{GFW_DATASET}__date"
+    conf_field = f"{GFW_DATASET}__confidence"
+
     sql = f"""
     SELECT
         longitude,
         latitude,
-        gfw_integrated_alerts__date,
-        gfw_integrated_alerts__confidence,
+        {date_field},
+        {conf_field},
         umd_glad_landsat_alerts__confidence,
         umd_glad_sentinel2_alerts__confidence,
         wur_radd_alerts__confidence
     FROM results
-    WHERE gfw_integrated_alerts__date >= '{start_date}'
-      AND gfw_integrated_alerts__date <= '{today}'
+    WHERE {date_field} >= '{start_date}'
+      AND {date_field} <= '{today}'
     """
 
-    url = "https://data-api.globalforestwatch.org/dataset/gfw_integrated_alerts/latest/query"
+    url = f"https://data-api.globalforestwatch.org/dataset/{GFW_DATASET}/latest/query"
 
     headers = {
         "x-api-key": API_KEY,
@@ -91,7 +101,7 @@ def fetch_gfw_data(aoi_geom_dict):
         "sql": sql
     }
 
-    print(f"\nFetching integrated alerts: {start_date} → {today} ...")
+    print(f"\nFetching {GFW_DATASET}: {start_date} → {today} ...")
 
     resp = requests.post(url, headers=headers, json=body)
 
@@ -108,8 +118,8 @@ def fetch_gfw_data(aoi_geom_dict):
     df = pd.DataFrame(data)
 
     df.rename(columns={
-        "gfw_integrated_alerts__date": "Date",
-        "gfw_integrated_alerts__confidence": "Conf_Integrated",
+        date_field: "Date",
+        conf_field: "Conf_Integrated",
         "umd_glad_landsat_alerts__confidence": "Conf_GLADL",
         "umd_glad_sentinel2_alerts__confidence": "Conf_GLADS2",
         "wur_radd_alerts__confidence": "Conf_RADD",
