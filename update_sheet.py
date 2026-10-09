@@ -4,7 +4,8 @@ import pandas as pd
 import geopandas as gpd
 import gspread
 import json
-from shapely.geometry import shape
+import time
+from shapely.geometry import shape, box, mapping
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -29,6 +30,15 @@ LULC_URL = "https://drive.google.com/uc?export=download&id=1v02RLW8-iDjfsXBjcv4u
 LULC_PATH = "data/lulc_v26.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+START_DATE = "2026-08-01"
+
+# GFW membatasi ukuran satu respons (sekitar 6 MB). Kueri dipecah per bulan;
+# bila masih terlalu besar, rentang tanggal dibelah dua, lalu area dibelah dua.
+MAX_AREA_SPLITS = 6
+
+# Jumlah baris per permintaan saat menulis ke Google Sheets.
+SHEET_CHUNK_ROWS = 5000
 
 
 def load_aoi_geometry(aoi_path):
@@ -64,16 +74,48 @@ def download_lulc_if_needed():
         print("LULC sudah tersedia lokal.")
 
 
-def fetch_gfw_data(aoi_geom_dict):
+def _month_ranges(start, end):
+    """Pecah rentang tanggal menjadi potongan per bulan kalender."""
+    ranges = []
+    cur = start
+    while cur <= end:
+        nxt = (cur.replace(day=1) + timedelta(days=32)).replace(day=1)
+        ranges.append((cur, min(nxt - timedelta(days=1), end)))
+        cur = nxt
+    return ranges
 
-    wib = timezone(timedelta(hours=7))
 
-    today = datetime.now(wib).strftime("%Y-%m-%d")
+def _polygon_parts(geom):
+    """Ambil hanya bagian poligon dari hasil potongan geometri."""
+    if geom.is_empty:
+        return None
+    if geom.geom_type in ("Polygon", "MultiPolygon"):
+        return geom
+    if geom.geom_type == "GeometryCollection":
+        polys = [g for g in geom.geoms if g.geom_type in ("Polygon", "MultiPolygon")]
+        if polys:
+            merged = polys[0]
+            for p in polys[1:]:
+                merged = merged.union(p)
+            return merged
+    return None
 
-    start_date = "2025-01-01"
 
-    date_field = f"{GFW_DATASET}__date"
-    conf_field = f"{GFW_DATASET}__confidence"
+def _split_area(geom):
+    """Belah geometri menjadi dua di sisi terpanjang kotak pembatasnya."""
+    minx, miny, maxx, maxy = geom.bounds
+    if (maxx - minx) >= (maxy - miny):
+        mid = (minx + maxx) / 2
+        halves = [box(minx, miny, mid, maxy), box(mid, miny, maxx, maxy)]
+    else:
+        mid = (miny + maxy) / 2
+        halves = [box(minx, miny, maxx, mid), box(minx, mid, maxx, maxy)]
+    parts = [_polygon_parts(geom.intersection(h)) for h in halves]
+    return [p for p in parts if p is not None]
+
+
+def _query_gfw(geom, start, end, url, headers, date_field, conf_field):
+    """Satu kueri ke GFW. Mengembalikan (rows, None) atau (None, pesan_error_5xx)."""
 
     sql = f"""
     SELECT
@@ -85,9 +127,64 @@ def fetch_gfw_data(aoi_geom_dict):
         umd_glad_sentinel2_alerts__confidence,
         wur_radd_alerts__confidence
     FROM results
-    WHERE {date_field} >= '{start_date}'
-      AND {date_field} <= '{today}'
+    WHERE {date_field} >= '{start:%Y-%m-%d}'
+      AND {date_field} <= '{end:%Y-%m-%d}'
     """
+
+    resp = requests.post(
+        url,
+        headers=headers,
+        json={"geometry": mapping(geom), "sql": sql},
+        timeout=300
+    )
+
+    if resp.status_code == 200:
+        return resp.json().get("data", []), None
+
+    if resp.status_code >= 500:
+        # Respons terlalu besar / timeout: bisa dicoba lagi dengan potongan lebih kecil
+        return None, f"{resp.status_code}: {resp.text[:200]}"
+
+    # 4xx = kueri atau akses salah; memecah kueri tidak akan menolong
+    raise RuntimeError(f"GFW menolak kueri [{resp.status_code}]: {resp.text[:300]}")
+
+
+def _fetch_range(geom, start, end, url, headers, date_field, conf_field, area_depth=0):
+    """Ambil satu rentang; pecah otomatis bila respons terlalu besar."""
+
+    rows, err = _query_gfw(geom, start, end, url, headers, date_field, conf_field)
+
+    if err is None:
+        return rows
+
+    if start < end:
+        mid = start + (end - start) // 2
+        print(f"  {start} s.d. {end} terlalu besar, dibelah per tanggal")
+        return (
+            _fetch_range(geom, start, mid, url, headers, date_field, conf_field, area_depth)
+            + _fetch_range(geom, mid + timedelta(days=1), end, url, headers, date_field, conf_field, area_depth)
+        )
+
+    if area_depth >= MAX_AREA_SPLITS:
+        raise RuntimeError(f"GFW tetap gagal untuk {start} setelah area dipecah {area_depth} kali: {err}")
+
+    print(f"  {start} masih terlalu besar, area dibelah (tingkat {area_depth + 1})")
+    rows = []
+    for part in _split_area(geom):
+        rows += _fetch_range(part, start, end, url, headers, date_field, conf_field, area_depth + 1)
+    return rows
+
+
+def fetch_gfw_data(aoi_shape):
+
+    wib = timezone(timedelta(hours=7))
+
+    today = datetime.now(wib).date()
+
+    start_date = datetime.strptime(START_DATE, "%Y-%m-%d").date()
+
+    date_field = f"{GFW_DATASET}__date"
+    conf_field = f"{GFW_DATASET}__confidence"
 
     url = f"https://data-api.globalforestwatch.org/dataset/{GFW_DATASET}/latest/query"
 
@@ -96,26 +193,23 @@ def fetch_gfw_data(aoi_geom_dict):
         "Content-Type": "application/json"
     }
 
-    body = {
-        "geometry": aoi_geom_dict,
-        "sql": sql
-    }
-
     print(f"\nFetching {GFW_DATASET}: {start_date} → {today} ...")
 
-    resp = requests.post(url, headers=headers, json=body)
+    data = []
 
-    if resp.status_code != 200:
-        print(f"[ERROR {resp.status_code}]: {resp.text[:300]}")
-        return pd.DataFrame()
-
-    data = resp.json().get("data", [])
+    for m_start, m_end in _month_ranges(start_date, today):
+        rows = _fetch_range(aoi_shape, m_start, m_end, url, headers, date_field, conf_field)
+        print(f"  {m_start:%Y-%m}: {len(rows)} baris")
+        data += rows
 
     if not data:
         print("Tidak ada data dari GFW.")
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
+
+    # Piksel di garis belah area bisa terambil dua kali
+    df = df.drop_duplicates(subset=["longitude", "latitude"]).reset_index(drop=True)
 
     df.rename(columns={
         date_field: "Date",
@@ -275,10 +369,15 @@ def overwrite_google_sheet(df):
 
         print(f"\nSheet '{sheet_name}' dibuat baru.")
 
-    sheet.append_rows(
-        [list(df.columns)] + df.values.tolist(),
-        value_input_option="USER_ENTERED"
-    )
+    rows = [list(df.columns)] + df.values.tolist()
+
+    # Tulis bertahap supaya satu permintaan tidak terlalu besar
+    for i in range(0, len(rows), SHEET_CHUNK_ROWS):
+        sheet.append_rows(
+            rows[i:i + SHEET_CHUNK_ROWS],
+            value_input_option="USER_ENTERED"
+        )
+        time.sleep(1.5)
 
     print(f"{len(df)} baris berhasil ditulis ke sheet '{sheet_name}'.")
 
@@ -325,7 +424,7 @@ if __name__ == "__main__":
 
     aoi_shape, aoi_geom_dict = load_aoi_geometry(AOI_PATH)
 
-    df = fetch_gfw_data(aoi_geom_dict)
+    df = fetch_gfw_data(aoi_shape)
 
     if not df.empty:
 
