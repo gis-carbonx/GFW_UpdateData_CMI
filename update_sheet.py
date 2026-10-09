@@ -31,7 +31,7 @@ LULC_PATH = "data/lulc_v26.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-START_DATE = "2026-08-01"
+START_DATE = "2026-01-01"
 
 # GFW membatasi ukuran satu respons (sekitar 6 MB). Kueri dipecah per bulan;
 # bila masih terlalu besar, rentang tanggal dibelah dua, lalu area dibelah dua.
