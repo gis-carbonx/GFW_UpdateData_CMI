@@ -1,0 +1,29 @@
+name: Update Google Sheet GFW Alerts
+
+on:
+  schedule:
+    - cron: "0 * * * *" # Jalankan tiap jam
+  workflow_dispatch:   
+
+jobs:
+  update-sheet:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Buat file kredensial dari secret JSON
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
+
+      - name: Jalankan update script
+        run: python update_sheet.py
