@@ -1,13 +1,25 @@
-name: Update Google Sheet GFW Alerts
+name: GFW version diff
 
+# Dijalankan manual dari tab Actions (tombol "Run workflow").
+# Terpisah dari workflow "Update Google Sheet GFW Alerts" dan tidak menyentuh spreadsheet.
 on:
-  schedule:
-    - cron: "0 * * * *" # Jalankan tiap jam
-  workflow_dispatch:   
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Dataset GFW yang dibandingkan"
+        type: choice
+        default: gfw_integrated_alerts
+        options:
+          - gfw_integrated_alerts
+          - gfw_integrated_dist_alerts
+
+permissions:
+  contents: read
 
 jobs:
-  update-sheet:
+  version-diff:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repo
@@ -21,9 +33,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Buat file kredensial dari secret JSON
-        run: |
-          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
+      - name: Bandingkan versi dataset
+        env:
+          GFW_API_KEY: ${{ secrets.GFW_API_KEY }}
+          GFW_DATASET: ${{ inputs.dataset }}
+        run: python gfw_version_diff.py
 
-      - name: Jalankan update script
-        run: python update_sheet.py
+      - name: Simpan hasil
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: version-diff-${{ inputs.dataset }}
+          path: version_diff/
+          retention-days: 30
