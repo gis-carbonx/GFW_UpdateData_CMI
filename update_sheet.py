@@ -142,10 +142,8 @@ def _query_gfw(geom, start, end, url, headers, date_field, conf_field):
         return resp.json().get("data", []), None
 
     if resp.status_code >= 500:
-        # Respons terlalu besar / timeout: bisa dicoba lagi dengan potongan lebih kecil
         return None, f"{resp.status_code}: {resp.text[:200]}"
 
-    # 4xx = kueri atau akses salah; memecah kueri tidak akan menolong
     raise RuntimeError(f"GFW menolak kueri [{resp.status_code}]: {resp.text[:300]}")
 
 
@@ -208,7 +206,6 @@ def fetch_gfw_data(aoi_shape):
 
     df = pd.DataFrame(data)
 
-    # Piksel di garis belah area bisa terambil dua kali
     df = df.drop_duplicates(subset=["longitude", "latitude"]).reset_index(drop=True)
 
     df.rename(columns={
@@ -371,7 +368,6 @@ def overwrite_google_sheet(df):
 
     rows = [list(df.columns)] + df.values.tolist()
 
-    # Tulis bertahap supaya satu permintaan tidak terlalu besar
     for i in range(0, len(rows), SHEET_CHUNK_ROWS):
         sheet.append_rows(
             rows[i:i + SHEET_CHUNK_ROWS],
